@@ -17,7 +17,10 @@
 #import <IOKit/hid/IOHIDUsageTables.h>
 #import <ApplicationServices/ApplicationServices.h>
 #import <os/lock.h>
+#import <QuartzCore/QuartzCore.h>
 #include <sys/sysctl.h>
+#include <dlfcn.h>
+#import <IOKit/ps/IOPowerSources.h>
 #import "Multitouch.h"
 #import "UI.h"
 #import "CheeseStack.h"
@@ -25,7 +28,7 @@
 #import "ForceSensor.h"
 
 #define APP_NAME    @"RodentGym"
-#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.2.0")
+#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.3.0")
 #define LOG_PATH    [@"~/Library/Logs/RodentGym.log" stringByExpandingTildeInPath]
 
 #pragma mark - MultitouchSupport (private framework)
@@ -109,6 +112,30 @@ static NSString *firmwareString(int v) {
     for (NSUInteger i = 0; i < hex.length; i++) [parts addObject:[hex substringWithRange:NSMakeRange(i, 1)]];
     return [parts componentsJoinedByString:@"."];
 }
+
+// Battery details for Bluetooth and USB accessories, keyed by accessory identifier (serial number or
+// Bluetooth address) and by name. The public IOPSCopyPowerSourcesList only returns the Mac's own
+// battery; IOPSCopyPowerSourcesByType(0) — the call `pmset -g accps` uses — includes accessories.
+static NSDictionary<NSString *, NSDictionary *> *accessoryPowerSources(void) {
+    static CFTypeRef (*byType)(int);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ byType = (CFTypeRef (*)(int))dlsym(RTLD_DEFAULT, "IOPSCopyPowerSourcesByType"); });
+    CFTypeRef info = byType ? byType(0) : IOPSCopyPowerSourcesInfo();
+    if (!info) return @{};
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    NSArray *list = CFBridgingRelease(IOPSCopyPowerSourcesList(info));
+    for (id ps in list) {
+        NSDictionary *d = (__bridge NSDictionary *)IOPSGetPowerSourceDescription(info, (__bridge CFTypeRef)ps);
+        if (![d[@"Type"] isEqual:@"Accessory Source"]) continue;
+        NSString *ident = d[@"Accessory Identifier"], *name = d[@"Name"];
+        if ([ident isKindOfClass:NSString.class]) out[[@"id:" stringByAppendingString:ident.uppercaseString]] = d;
+        if ([name isKindOfClass:NSString.class] && !out[[@"name:" stringByAppendingString:name]]) out[[@"name:" stringByAppendingString:name]] = d;
+    }
+    CFRelease(info);
+    return out;
+}
+
+static void powerSourcesChanged(void *context);
 
 // The Mac's marketing name from the device tree, e.g. "MacBook Pro (14-inch, M5)".
 static NSString *macProductName(void) {
@@ -203,6 +230,19 @@ static NSString *modelName(int productID, RGKind kind) {
     return [NSString stringWithFormat:@"%@ (product 0x%04x)", kind == RGKindMouse ? @"Magic Mouse" : @"Magic Trackpad", productID];
 }
 
+#pragma mark - Live visualisation model
+
+#define TRAIL_LEN  48
+#define TRAIL_LIFE 0.45   // seconds a trail point stays visible
+#define MAX_PINGS  8
+#define PING_LIFE  0.8    // seconds a click ripple lasts
+
+typedef struct { int fid, count; float x[TRAIL_LEN], y[TRAIL_LEN]; double t[TRAIL_LEN]; } RGTrail;
+typedef struct { float x, y; double start; int kind; } RGPing;   // kind: 1 left, 2 right, 3 dropped
+
+static double gFrozenTime;   // set in demo mode so screenshots catch animations mid-flight
+static double animNow(void) { return gFrozenTime > 0 ? gFrozenTime : CFAbsoluteTimeGetCurrent(); }
+
 @interface RGDevice : NSObject {
 @public
     MTDeviceRef mt;
@@ -212,6 +252,11 @@ static NSString *modelName(int productID, RGKind kind) {
     double widthMM, heightMM;
     BOOL hidDown[4];
     long sent[4], dropped[4], remapped;
+    RGTrail trails[MAX_TOUCHES];
+    RGPing pings[MAX_PINGS];
+    int pingHead;
+    BOOL charging, charged, onCable;
+    int lowWarn;
 }
 @property (copy) NSString *name, *model, *firmware, *identifier, *transport;
 @property (copy) NSString *productName;   // as the hardware names itself; used to match HID reports
@@ -266,6 +311,67 @@ static NSString *modelName(int productID, RGKind kind) {
 }
 
 - (NSString *)key { return self.identifier ?: self.name; }
+
+- (NSString *)powerStatus {
+    if (battery < 0) return nil;
+    if (onCable && (charged || battery >= 100)) return @"Charged";
+    if (charging) return @"Charging";
+    if (onCable) return @"Plugged in";
+    if (battery <= MAX(5, lowWarn)) return @"Low battery";
+    return @"On battery";
+}
+
+- (NSColor *)batteryColour {
+    if (charging || (onCable && battery >= 100)) return NSColor.systemGreenColor;
+    if (battery <= 10) return NSColor.systemRedColor;
+    if (battery <= MAX(20, lowWarn)) return NSColor.systemOrangeColor;
+    return NSColor.labelColor;
+}
+
+- (void)addPing:(int)pingKind at:(NSPoint)p {
+    pings[pingHead] = (RGPing){(float)p.x, (float)p.y, animNow(), pingKind};
+    pingHead = (pingHead + 1) % MAX_PINGS;
+}
+
+// Appends the latest touches to each finger's trail and lets old points age out.
+- (void)updateTrails:(const MTFinger *)f count:(int)n now:(double)now {
+    if (gFrozenTime > 0) return;
+    for (int i = 0; i < n; i++) {
+        RGTrail *tr = NULL;
+        for (int k = 0; k < MAX_TOUCHES; k++) if (trails[k].count && trails[k].fid == f[i].identifier) { tr = &trails[k]; break; }
+        if (!tr) for (int k = 0; k < MAX_TOUCHES; k++) if (!trails[k].count) { tr = &trails[k]; tr->fid = f[i].identifier; break; }
+        if (!tr) continue;
+        float x = f[i].normalized.pos.x, y = f[i].normalized.pos.y;
+        if (tr->count && fabsf(x - tr->x[tr->count - 1]) < 0.001f && fabsf(y - tr->y[tr->count - 1]) < 0.001f) {
+            tr->t[tr->count - 1] = now;   // resting finger: keep the head fresh without growing the tail
+            continue;
+        }
+        if (tr->count == TRAIL_LEN) {
+            memmove(tr->x, tr->x + 1, sizeof(float) * (TRAIL_LEN - 1));
+            memmove(tr->y, tr->y + 1, sizeof(float) * (TRAIL_LEN - 1));
+            memmove(tr->t, tr->t + 1, sizeof(double) * (TRAIL_LEN - 1));
+            tr->count--;
+        }
+        tr->x[tr->count] = x; tr->y[tr->count] = y; tr->t[tr->count] = now;
+        tr->count++;
+    }
+    for (int k = 0; k < MAX_TOUCHES; k++) {
+        RGTrail *tr = &trails[k];
+        int drop = 0;
+        while (drop < tr->count && now - tr->t[drop] > TRAIL_LIFE) drop++;
+        if (!drop) continue;
+        tr->count -= drop;
+        memmove(tr->x, tr->x + drop, sizeof(float) * (size_t)tr->count);
+        memmove(tr->y, tr->y + drop, sizeof(float) * (size_t)tr->count);
+        memmove(tr->t, tr->t + drop, sizeof(double) * (size_t)tr->count);
+    }
+}
+
+- (BOOL)isAnimatingAt:(double)now {
+    for (int k = 0; k < MAX_PINGS; k++) if (pings[k].start > 0 && now - pings[k].start < PING_LIFE) return YES;
+    for (int k = 0; k < MAX_TOUCHES; k++) if (trails[k].count > 1) return YES;
+    return NO;
+}
 @end
 
 #pragma mark - Drawing
@@ -411,6 +517,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
     __strong RGDevice *hidPendingDevice[4], *evtToucher[4];
     __strong NSString *hidPendingName[4];
     BOOL evtDown[4], anonHidDown[4];
+    NSPoint hidPendingPos[4];
     long delivered[4], remappedTotal, totalDrops;
     double lastDrop;
     NSString *statusLine;
@@ -447,6 +554,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
 - (void)hidButton:(int)b down:(BOOL)down device:(IOHIDDeviceRef)h;
 - (void)event:(int)b down:(BOOL)down;
 - (void)rescanDevices:(id)sender;
+- (void)refreshBatteryAndColour;
 @end
 
 static void hidCallback(void *ctx, IOReturn result, void *sender, IOHIDValueRef value) {
@@ -473,6 +581,8 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
     return ev;
 }
 
+static void powerSourcesChanged(void *context) { [(__bridge RGController *)context refreshBatteryAndColour]; }
+
 static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     io_object_t o;
     while ((o = IOIteratorNext(it))) IOObjectRelease(o);
@@ -485,11 +595,30 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 
 @interface RGView : NSView
 @property (weak) RGController *c;
+@property (strong) CADisplayLink *link;
 @end
 
 @implementation RGView
 
 - (BOOL)isFlipped { return YES; }
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    if (self.window && !self.link) {
+        self.link = [self displayLinkWithTarget:self selector:@selector(frame:)];
+        [self.link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    } else if (!self.window) {
+        [self.link invalidate];
+        self.link = nil;
+    }
+}
+
+- (void)frame:(CADisplayLink *)link {
+    double now = animNow();
+    MTFinger t[MAX_TOUCHES];
+    for (RGDevice *d in self.c.visibleDevices)
+        if (RGCopyTouches(d->slot, t) > 0 || [d isAnimatingAt:now]) { self.needsDisplay = YES; return; }
+}
 
 - (NSRect)cardRect:(NSUInteger)i {
     return NSMakeRect(MARGIN + i * (CARD_W + MARGIN), self.c.topInset + 12, CARD_W, CARD_H);
@@ -521,9 +650,11 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     RGDrawCard(card, 16);
     CGFloat x = card.origin.x + 16, y = card.origin.y, iw = card.size.width - 32;
     NSString *title = c.demo ? (d->kind == RGKindMouse ? @"Magic Mouse" : @"Magic Trackpad") : d.name;
-    RGDrawText(title, NSMakeRect(x, y + 14, iw, 20), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor, NSTextAlignmentLeft);
-    NSString *sub = (c.demo || !d.identifier.length) ? d.model : [NSString stringWithFormat:@"%@ · %@", d.model, d.identifier];
-    RGDrawText(sub, NSMakeRect(x, y + 35, iw, 16), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor, NSTextAlignmentLeft);
+    CGFloat headW = d->battery >= 0 ? iw - 96 : iw;
+    RGDrawText(title, NSMakeRect(x, y + 14, headW, 20), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor, NSTextAlignmentLeft);
+    NSString *sub = d.model;
+    RGDrawText(sub, NSMakeRect(x, y + 35, headW, 16), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor, NSTextAlignmentLeft);
+    if (d->battery >= 0) [self drawBattery:d topRight:NSMakePoint(x + iw, y + 14)];
 
     // Surface, drawn at the sensor's real aspect ratio
     NSRect area = NSMakeRect(x + 6, y + 62, iw - 12, 190);
@@ -555,7 +686,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     NSMutableArray *hw = [NSMutableArray array];
     if (d.firmware) [hw addObject:[@"Firmware " stringByAppendingString:d.firmware]];
     if (d.transport) [hw addObject:d.transport];
-    if (d->battery >= 0) [hw addObject:[NSString stringWithFormat:@"Battery %d%%", d->battery]];
+    if (d.identifier.length && !c.demo) [hw addObject:d.identifier];
     NSMutableArray *info = [NSMutableArray arrayWithObject:hw.count ? [hw componentsJoinedByString:@" · "] : @"No hardware details reported"];
     [info addObject:[c colourTextFor:d]];
     [info addObjectsFromArray:d.settingsLines];
@@ -572,6 +703,28 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     long drops = d->dropped[1] + d->dropped[2] + d->dropped[3];
     rtext([NSString stringWithFormat:@"Dropped  L %ld  R %ld", d->dropped[1], d->dropped[2]], x + iw, ty + 3,
           drops ? [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightBold] : mono, drops ? NSColor.systemRedColor : NSColor.labelColor);
+}
+
+// Battery glyph (level, with a bolt while charging), percentage and status, right-aligned.
+- (void)drawBattery:(RGDevice *)d topRight:(NSPoint)tr {
+    int level = d->battery;
+    NSString *symbol = d->charging ? @"battery.100percent.bolt"
+                     : level >= 88 ? @"battery.100percent" : level >= 63 ? @"battery.75percent"
+                     : level >= 38 ? @"battery.50percent" : level >= 13 ? @"battery.25percent" : @"battery.0percent";
+    NSColor *colour = d.batteryColour;
+    NSImageSymbolConfiguration *cfg = [[NSImageSymbolConfiguration configurationWithPointSize:15 weight:NSFontWeightRegular]
+        configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:colour]];
+    NSImage *img = [RGSymbol(symbol, d.powerStatus) imageWithSymbolConfiguration:cfg];
+    NSFont *pctFont = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightSemibold];
+    NSString *pct = [NSString stringWithFormat:@"%d%%", level];
+    CGFloat pw = [pct sizeWithAttributes:@{NSFontAttributeName: pctFont}].width;
+    NSSize is = img.size;
+    NSRect imgRect = NSMakeRect(tr.x - is.width, tr.y + 10 - is.height / 2, is.width, is.height);
+    [img drawInRect:imgRect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+    RGDrawText(pct, NSMakeRect(imgRect.origin.x - pw - 6, tr.y + 1, pw + 2, 18), pctFont,
+               d->charging || level > 20 ? NSColor.labelColor : colour, NSTextAlignmentRight);
+    RGDrawText(d.powerStatus ?: @"", NSMakeRect(tr.x - 96, tr.y + 21, 96, 15), [NSFont systemFontOfSize:11],
+               d->charging || d->onCable ? NSColor.systemGreenColor : (level <= 20 ? colour : NSColor.secondaryLabelColor), NSTextAlignmentRight);
 }
 
 - (void)drawZones:(RGDevice *)d surface:(NSRect)s dark:(BOOL)dark {
@@ -620,26 +773,129 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     [NSGraphicsContext restoreGraphicsState];
 }
 
-- (void)drawTouches:(RGDevice *)d surface:(NSRect)s {
-    MTFinger t[MAX_TOUCHES];
-    int n = RGCopyTouches(d->slot, t);
+// Is a contact at (x, y) in this device's secondary-click area right now?
+static BOOL inSecondary(RGDevice *d, float x, float y, int fingers) {
     int z = d.secondaryZone;
     float div = d.division;
+    if (d->kind == RGKindMouse) return (z == 1 && x >= div) || (z == 2 && x <= 1 - div);
+    if (z == 1) return fingers >= 2;
+    if (z >= 2) return y <= 0.28f && (z == 2 ? x >= 0.75f : x <= 0.25f);
+    return NO;
+}
+
+static NSColor *pingColour(int kind) {
+    return kind == 3 ? NSColor.systemRedColor : kind == 2 ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
+}
+
+static double easeOutCubic(double t) { return 1 - pow(1 - t, 3); }
+
+- (void)drawTouches:(RGDevice *)d surface:(NSRect)s {
+    double now = animNow();
+    MTFinger t[MAX_TOUCHES];
+    int n = RGCopyTouches(d->slot, t);
+    [d updateTrails:t count:n now:now];
+    CGFloat scale = MIN(s.size.width, s.size.height);
+    CGFloat dotR = MAX(7, scale * 0.045);
+    NSPoint (^toView)(float, float) = ^NSPoint(float x, float y) {
+        return NSMakePoint(s.origin.x + x * s.size.width, s.origin.y + (1 - y) * s.size.height);
+    };
+    CGContextRef ctx = NSGraphicsContext.currentContext.CGContext;
+
+    [NSGraphicsContext saveGraphicsState];
+    [surfacePath(d->kind, NSInsetRect(s, -2, -2)) addClip];
+
+    // Trails: tapered, fading, with a soft glow in the finger's colour
+    for (int k = 0; k < MAX_TOUCHES; k++) {
+        RGTrail *tr = &d->trails[k];
+        if (tr->count < 2) continue;
+        NSColor *c = inSecondary(d, tr->x[tr->count - 1], tr->y[tr->count - 1], n) ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
+        CGContextSaveGState(ctx);
+        CGContextSetShadowWithColor(ctx, CGSizeZero, 9, [c colorWithAlphaComponent:0.6].CGColor);
+        CGContextBeginTransparencyLayer(ctx, NULL);
+        for (int i = 1; i < tr->count; i++) {
+            double life = 1 - (now - tr->t[i]) / TRAIL_LIFE;
+            if (life <= 0) continue;
+            CGFloat along = (CGFloat)i / (tr->count - 1);
+            NSBezierPath *seg = [NSBezierPath bezierPath];
+            [seg moveToPoint:toView(tr->x[i - 1], tr->y[i - 1])];
+            [seg lineToPoint:toView(tr->x[i], tr->y[i])];
+            seg.lineWidth = 1 + along * dotR * 1.25;
+            seg.lineCapStyle = i == tr->count - 1 ? NSLineCapStyleRound : NSLineCapStyleButt;
+            [[c colorWithAlphaComponent:0.9 * life * (0.15 + 0.85 * along)] setStroke];
+            [seg stroke];
+        }
+        CGContextEndTransparencyLayer(ctx);
+        CGContextRestoreGState(ctx);
+    }
+
+    // Pings: an eased double ripple with a bright core; dropped clicks get a red ✕
+    BOOL reduce = RGReduceMotion();
+    CGFloat reach = scale * 0.32;
+    for (int k = 0; k < MAX_PINGS; k++) {
+        RGPing *pg = &d->pings[k];
+        double age = now - pg->start;
+        if (pg->start <= 0 || age < 0 || age > PING_LIFE) continue;
+        double tt = age / PING_LIFE, e = easeOutCubic(tt);
+        NSColor *c = pingColour(pg->kind);
+        NSPoint centre = toView(pg->x, pg->y);
+        if (reduce) {
+            CGFloat r = reach * 0.45;
+            [[c colorWithAlphaComponent:0.45 * (1 - tt)] setFill];
+            [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(centre.x - r, centre.y - r, 2 * r, 2 * r)] fill];
+        } else {
+            CGContextSaveGState(ctx);
+            CGContextSetShadowWithColor(ctx, CGSizeZero, 12, [c colorWithAlphaComponent:0.7].CGColor);
+            for (int ring = 0; ring < 2; ring++) {
+                double rt = (age - ring * 0.11) / PING_LIFE;
+                if (rt <= 0) continue;
+                double re = easeOutCubic(MIN(1, rt));
+                CGFloat r = dotR * 0.8 + reach * (ring ? 0.7 : 1.0) * re;
+                NSBezierPath *ringPath = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(centre.x - r, centre.y - r, 2 * r, 2 * r)];
+                ringPath.lineWidth = (ring ? 1.5 : 3.0) * (1 - re) + 0.75;
+                [[c colorWithAlphaComponent:(ring ? 0.55 : 0.95) * pow(1 - MIN(1, rt), 1.6)] setStroke];
+                [ringPath stroke];
+            }
+            CGFloat core = dotR * (1.1 - 0.6 * e);
+            NSGradient *glow = [[NSGradient alloc] initWithStartingColor:[blend(c, NSColor.whiteColor, 0.6) colorWithAlphaComponent:pow(1 - tt, 2)]
+                                                             endingColor:[c colorWithAlphaComponent:0]];
+            [glow drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(centre.x - core * 2, centre.y - core * 2, core * 4, core * 4)]
+                relativeCenterPosition:NSZeroPoint];
+            CGContextRestoreGState(ctx);
+        }
+        if (pg->kind == 3) {
+            CGFloat x = dotR * 0.7;
+            NSBezierPath *cross = [NSBezierPath bezierPath];
+            [cross moveToPoint:NSMakePoint(centre.x - x, centre.y - x)];
+            [cross lineToPoint:NSMakePoint(centre.x + x, centre.y + x)];
+            [cross moveToPoint:NSMakePoint(centre.x + x, centre.y - x)];
+            [cross lineToPoint:NSMakePoint(centre.x - x, centre.y + x)];
+            cross.lineWidth = 2.5;
+            cross.lineCapStyle = NSLineCapStyleRound;
+            [[NSColor.systemRedColor colorWithAlphaComponent:1 - tt] setStroke];
+            [cross stroke];
+        }
+    }
+
+    // Fingers: a lit bead with a glow and a fine rim
     for (int i = 0; i < n; i++) {
         float tx = t[i].normalized.pos.x, ty = t[i].normalized.pos.y;
-        CGFloat px = s.origin.x + tx * s.size.width, py = s.origin.y + (1 - ty) * s.size.height;
-        BOOL secondary;
-        if (d->kind == RGKindMouse) secondary = (z == 1 && tx >= div) || (z == 2 && tx <= 1 - div);
-        else if (z == 1) secondary = n >= 2;
-        else if (z >= 2) secondary = ty <= 0.28 && (z == 2 ? tx >= 0.75 : tx <= 0.25);
-        else secondary = NO;
-        NSColor *col = secondary ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
-        CGFloat r = 7 + MIN(t[i].size, 2.5f) * 4.5;
-        [[col colorWithAlphaComponent:0.25] setFill];
-        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(px - r - 6, py - r - 6, 2 * (r + 6), 2 * (r + 6))] fill];
-        [col setFill];
-        [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(px - r, py - r, 2 * r, 2 * r)] fill];
+        NSPoint p = toView(tx, ty);
+        NSColor *c = inSecondary(d, tx, ty, n) ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
+        CGFloat r = dotR + MIN(t[i].size, 2.5f) * dotR * 0.25;
+        NSRect dot = NSMakeRect(p.x - r, p.y - r, 2 * r, 2 * r);
+        CGContextSaveGState(ctx);
+        CGContextSetShadowWithColor(ctx, CGSizeZero, 14, [c colorWithAlphaComponent:0.75].CGColor);
+        [c setFill];
+        [[NSBezierPath bezierPathWithOvalInRect:dot] fill];
+        CGContextRestoreGState(ctx);
+        NSGradient *bead = [[NSGradient alloc] initWithStartingColor:blend(c, NSColor.whiteColor, 0.55) endingColor:c];
+        [bead drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:dot] relativeCenterPosition:NSMakePoint(-0.3, -0.35)];
+        NSBezierPath *rim = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(dot, 0.6, 0.6)];
+        rim.lineWidth = 1.2;
+        [[NSColor colorWithWhite:1 alpha:0.75] setStroke];
+        [rim stroke];
     }
+    [NSGraphicsContext restoreGraphicsState];
 }
 
 - (void)drawDelivered:(NSRect)r {
@@ -695,8 +951,9 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     NSArray<RGDevice *> *devs = c.visibleDevices;
     for (NSUInteger i = 0; i < devs.count; i++) {
         RGDevice *d = devs[i];
-        NSString *label = [NSString stringWithFormat:@"%@, %@. Sending %@. %@. %@. Sent %ld left and %ld right clicks, dropped %ld.",
-                           d.name, d.model,
+        NSString *battery = d->battery >= 0 ? [NSString stringWithFormat:@" Battery %d percent, %@.", d->battery, d.powerStatus.lowercaseString] : @"";
+        NSString *label = [NSString stringWithFormat:@"%@, %@.%@ Sending %@. %@. %@. Sent %ld left and %ld right clicks, dropped %ld.",
+                           d.name, d.model, battery,
                            d->hidDown[1] ? @"left" : d->hidDown[2] ? @"right" : @"nothing",
                            [d.settingsLines componentsJoinedByString:@". "], [c colourTextFor:d],
                            d->sent[1], d->sent[2], d->dropped[1] + d->dropped[2]];
@@ -1398,13 +1655,31 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 
 - (void)refreshBatteryAndColour {
     NSDictionary *batt = registryValuesWithKey(@"BatteryPercent"), *col = registryValuesWithKey(@"ColorID");
+    NSDictionary *power = accessoryPowerSources();
     for (RGDevice *d in self.devices) {
         NSString *bySerial = d.identifier ? [@"serial:" stringByAppendingString:d.identifier] : @"";
         NSString *byName = [@"product:" stringByAppendingString:d.productName];
         NSNumber *b = batt[bySerial] ?: batt[byName], *c = col[bySerial] ?: col[byName];
-        d->battery = b ? b.intValue : -1;
         d->colorID = c ? c.intValue : -1;
+        NSDictionary *ps = (d.identifier ? power[[@"id:" stringByAppendingString:d.identifier.uppercaseString]] : nil)
+                        ?: power[[@"name:" stringByAppendingString:d.productName]];
+        NSString *before = d->battery >= 0 ? d.powerStatus : nil;
+        if (ps) {
+            d->battery = [ps[@"Current Capacity"] intValue];
+            d->charging = [ps[@"Is Charging"] boolValue];
+            d->charged = [ps[@"Is Charged"] boolValue];
+            d->onCable = [ps[@"Power Source State"] isEqual:@"AC Power"];
+            d->lowWarn = ps[@"Low Warn Level"] ? [ps[@"Low Warn Level"] intValue] : 20;
+        } else {
+            d->battery = b ? b.intValue : -1;
+            d->charging = d->charged = d->onCable = NO;
+            d->lowWarn = 20;
+        }
+        NSString *after = d->battery >= 0 ? d.powerStatus : nil;
+        if (self.live && before && after && ![before isEqualToString:after])
+            [self log:[NSString stringWithFormat:@"· %@: %@ (%d%%)", d.name, after.lowercaseString, d->battery]];
     }
+    self.view.needsDisplay = YES;
 }
 
 // Re-reads the settings each driver is applying and logs any change to secondary click.
@@ -1421,6 +1696,11 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 }
 
 - (void)watchDevices {
+    CFRunLoopSourceRef power = IOPSNotificationCreateRunLoopSource(powerSourcesChanged, (__bridge void *)self);
+    if (power) {
+        CFRunLoopAddSource(CFRunLoopGetMain(), power, kCFRunLoopCommonModes);
+        CFRelease(power);
+    }
     notifyPort = IONotificationPortCreate(kIOMainPortDefault);
     CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(notifyPort), kCFRunLoopCommonModes);
     io_object_t o;
@@ -1481,6 +1761,26 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     return match;
 }
 
+// Where a click happened on the device, in its normalised coordinates: the finger doing the
+// clicking on a mouse, the middle of the fingers on a trackpad, or a sensible default.
+- (NSPoint)pingPointFor:(RGDevice *)d button:(int)b {
+    MTFinger t[MAX_TOUCHES];
+    int n = RGCopyTouches(d->slot, t);
+    if (n == 0) return d->kind == RGKindMouse ? NSMakePoint(b == 2 ? 0.78 : 0.28, 0.76) : NSMakePoint(0.5, 0.45);
+    if (d->kind == RGKindMouse) {
+        int best = 0;
+        for (int i = 1; i < n; i++) {
+            BOOL better = (b == 2) == (d.secondaryZone != 2) ? t[i].normalized.pos.x > t[best].normalized.pos.x
+                                                             : t[i].normalized.pos.x < t[best].normalized.pos.x;
+            if (better) best = i;
+        }
+        return NSMakePoint(t[best].normalized.pos.x, t[best].normalized.pos.y);
+    }
+    float x = 0, y = 0;
+    for (int i = 0; i < n; i++) { x += t[i].normalized.pos.x; y += t[i].normalized.pos.y; }
+    return NSMakePoint(x / n, y / n);
+}
+
 - (RGDevice *)touchedDevice {
     MTFinger t[MAX_TOUCHES];
     for (RGDevice *d in self.devices) if (RGCopyTouches(d->slot, t) > 0) return d;
@@ -1502,6 +1802,10 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     if (evtPending[b] > 0 && now - evtPending[b] < win) { evtPending[b] = 0; [self matched:b name:name]; }
     else if (o && evtPending[o] > 0 && now - evtPending[o] < win) { evtPending[o] = 0; [self sent:b delivered:o device:d name:name]; }
     else { hidPending[b] = now; hidPendingDevice[b] = d; hidPendingName[b] = name; }
+    if (d) {
+        hidPendingPos[b] = [self pingPointFor:d button:b];
+        [d addPing:b at:hidPendingPos[b]];
+    }
     self.view.needsDisplay = YES;
 }
 
@@ -1512,7 +1816,11 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     int o = otherButton(b);
     if (hidPending[b] > 0) { hidPending[b] = 0; [self matched:b name:hidPendingName[b]]; }
     else if (o && hidPending[o] > 0) { hidPending[o] = 0; [self sent:o delivered:b device:hidPendingDevice[o] name:hidPendingName[o]]; }
-    else { evtPending[b] = CFAbsoluteTimeGetCurrent(); evtToucher[b] = [self touchedDevice]; }
+    else {
+        evtPending[b] = CFAbsoluteTimeGetCurrent();
+        evtToucher[b] = [self touchedDevice];
+        if (evtToucher[b]) [evtToucher[b] addPing:b at:[self pingPointFor:evtToucher[b] button:b]];   // e.g. trackpad clicks with no button report
+    }
     self.view.needsDisplay = YES;
 }
 
@@ -1536,7 +1844,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         if (hidPending[b] > 0 && now - hidPending[b] > win) {
             hidPending[b] = 0;
             RGDevice *d = hidPendingDevice[b];
-            if (d) d->dropped[b]++;
+            if (d) { d->dropped[b]++; [d addPing:3 at:hidPendingPos[b]]; }
             totalDrops++;
             lastDrop = now;
             if ([NSUserDefaults.standardUserDefaults boolForKey:kDropSound]) [[NSSound soundNamed:@"Basso"] play];
@@ -1554,7 +1862,6 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
                             : [NSString stringWithFormat:@"· %@ click with no button report (another device, or synthetic)", kButtonName[b]]];
         }
     }
-    self.view.needsDisplay = YES;
 }
 
 // Memory state goes in the window subtitle and on every dropped-click log line.
@@ -1586,6 +1893,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     CFPreferencesAppSynchronize(kCFPreferencesAnyApplication);
     if (self.live) [self refreshPrefs];
     if (++statusTicks % 30 == 0) [self refreshBatteryAndColour];
+    self.view.needsDisplay = YES;   // settings or battery may have changed
 }
 
 #pragma mark Demo mode (anonymised data for README screenshots)
@@ -1604,18 +1912,38 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
             n = 1;
             d->hidDown[2] = YES;
             d->sent[1] = 128; d->sent[2] = 23; d->dropped[2] = 1;
-            d->battery = 72;
+            d->battery = 72; d->onCable = NO; d->charging = NO; d->lowWarn = 20;
         } else {
             f[0].normalized.pos = (MTPoint){0.40f, 0.52f};
             f[1].normalized.pos = (MTPoint){0.55f, 0.56f};
             f[0].size = f[1].size = 1.0f;
             n = 2;
             d->sent[1] = 64; d->sent[2] = 0;
+            d->battery = 86; d->charging = YES; d->onCable = YES; d->lowWarn = 20;
         }
         os_unfair_lock_lock(&gLock);
         memcpy(gSlots[d->slot].touches, f, sizeof(MTFinger) * (size_t)n);
         gSlots[d->slot].count = n;
         os_unfair_lock_unlock(&gLock);
+    }
+    gFrozenTime = CFAbsoluteTimeGetCurrent();
+    for (RGDevice *d in self.devices) {
+        if (d->kind == RGKindMouse) {
+            d->pings[0] = (RGPing){0.76f, 0.78f, gFrozenTime - 0.22, 2};
+            d->pings[1] = (RGPing){0.30f, 0.40f, gFrozenTime - 0.5, 1};
+        } else if (d->kind == RGKindTrackpad) {
+            for (int f = 0; f < 2; f++) {
+                RGTrail *tr = &d->trails[f];
+                tr->fid = f + 1;
+                tr->count = 30;
+                for (int i = 0; i < 30; i++) {
+                    float u = i / 29.0f;
+                    tr->x[i] = (f ? 0.22f : 0.08f) + u * 0.33f;
+                    tr->y[i] = (f ? 0.42f : 0.38f) + 0.14f * u + 0.05f * sinf(u * 3.1f);
+                    tr->t[i] = gFrozenTime - (1 - u) * 0.4;
+                }
+            }
+        }
     }
     evtDown[2] = YES;
     delivered[1] = 192; delivered[2] = 31;

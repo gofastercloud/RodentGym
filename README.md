@@ -6,13 +6,15 @@ RodentGym is a small native macOS app for diagnosing and exercising pointer inpu
 
 ![RodentGym showing a Magic Mouse and Magic Trackpad](docs/screenshot.png)
 
-> **Status: 0.2.0, an early release.** RodentGym reads touch data from a private Apple framework, so treat it as a diagnostic tool rather than something to rely on across macOS updates.
+> **Status: 0.3.0, an early release.** RodentGym reads touch data from a private Apple framework, so treat it as a diagnostic tool rather than something to rely on across macOS updates.
 
 ## What it shows
 
 For every connected Magic Mouse and Magic Trackpad, plus a MacBook's built-in trackpad whenever the lid is open:
 
-- **Live touches** on a drawing of the device at the sensor's real proportions, in the device's own colour. Touches that count as a secondary click are highlighted.
+- **Live touches** on a drawing of the device at the sensor's real proportions, in the device's own colour, with glowing trails that follow each finger. Touches that count as a secondary click are highlighted.
+- **Click pings**: every click ripples out from where it happened, blue for left and orange for right. A dropped click ripples red with a ✕.
+- **Battery and charging**: level, a charging bolt, and status (Charging, Charged, Plugged in, On battery or Low battery), updated the moment a cable goes in or out.
 - **Secondary-click zones** from your current settings, including the left/right split, left-handed mode and trackpad corner clicks.
 - **What the hardware sends**: the raw HID button reports, before macOS processes them.
 - **What macOS delivers**: the click events that actually reach apps.
@@ -69,6 +71,7 @@ RodentGym is a native AppKit app that follows Apple's current macOS design guida
 - **Light and dark mode**, Increase Contrast and Reduce Transparency, using semantic system colours throughout. Animations respect Reduce Motion.
 - **SF Symbols** in the toolbar and menus, standard menu structure and shortcuts, and a standard settings form.
 - **Accessibility**: the custom views expose their content to VoiceOver, and recognised gestures and dropped clicks are announced.
+- **Smooth and frugal**: animation runs on a display link at the screen's refresh rate (up to 120 Hz on ProMotion) and stops when nothing is moving.
 - **Hardened runtime** signing, secure state restoration, and no network access.
 
 ## Requirements
@@ -107,6 +110,7 @@ There's no Xcode project: the app is a few Objective-C files built with `clang`,
 | Device details | IORegistry (`MultitouchPreferences`, `VersionNumber`, `BatteryPercent`, `ColorID`) | Model, firmware, battery, colour, effective settings |
 | Gesture settings | Driver preferences, `com.apple.dock`, global defaults | Which gestures are on, and with how many fingers |
 | Click pressure | `NSEvent` pressure events (stage and pressure) | How hard each click and Force Click was |
+| Battery | Accessory power sources (`IOPSCopyPowerSourcesByType`, as used by `pmset -g accps`) | Level, charging, on cable or battery |
 
 A button report is matched against the click event that follows it within a configurable window (400 ms by default). Hot-plugging is handled through IOKit notifications.
 

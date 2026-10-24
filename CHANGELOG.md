@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 — 2026-10-25
+
+- **Live visualisation on the device drawings:** a glowing, tapered trail follows each finger and fades over about half a second (blue, or orange in a secondary-click area). Every click sends out an eased double ripple: blue for left, orange for right. A dropped click gets a red ripple with a ✕ where it happened. Redrawing now runs on a display link at the screen's refresh rate (up to 120 Hz), and only while something is moving. With Reduce Motion on, ripples become simple fades.
+- **Battery and charging:** each Magic device's card shows a battery glyph, percentage and status (Charging, Charged, Plugged in, On battery or Low battery) from macOS's accessory power sources. It updates the moment a cable is connected or removed, and logs charging changes and low battery.
+- The serial number or Bluetooth address moved from the card's model line to its details line.
+
 ## 0.2.0 — 2026-10-25
 
 - **Built-in trackpad, automatically:** on a MacBook, the built-in trackpad appears whenever the lid is open and hides when it's closed, with lid changes logged. It's named after the Mac (for example "MacBook Pro (14-inch, M5)"). Settings › Built-in trackpad offers Automatic, Always show or Never show.

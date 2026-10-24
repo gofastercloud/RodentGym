@@ -14,7 +14,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD/AppIcon.iconset
 clang -fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=14.0 \
   -o "$APP/Contents/MacOS/RodentGym" Sources/*.m \
   -F/System/Library/PrivateFrameworks -framework MultitouchSupport \
-  -framework Cocoa -framework IOKit -framework ApplicationServices
+  -framework Cocoa -framework IOKit -framework ApplicationServices -framework QuartzCore
 
 # The app draws its own icon; render it and convert to .icns
 "$APP/Contents/MacOS/RodentGym" --render-icon "$BUILD/icon_1024.png"
