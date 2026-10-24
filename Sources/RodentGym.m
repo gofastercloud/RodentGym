@@ -26,9 +26,13 @@
 #import "CheeseStack.h"
 #import "GestureTrainer.h"
 #import "ForceSensor.h"
+#import "LatencyMonitor.h"
+#import "SelfTest.h"
+#import "Bluetooth.h"
+#include <mach/mach_time.h>
 
 #define APP_NAME    @"RodentGym"
-#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.3.0")
+#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.4.0")
 #define LOG_PATH    [@"~/Library/Logs/RodentGym.log" stringByExpandingTildeInPath]
 
 #pragma mark - MultitouchSupport (private framework)
@@ -47,11 +51,63 @@ extern int MTDeviceGetSensorSurfaceDimensions(MTDeviceRef, int *, int *);
 
 #define MAX_DEVICES 8
 
-// Touch frames arrive on a MultitouchSupport thread; they are copied into fixed slots under a lock.
-typedef struct { MTDeviceRef mt; int count; MTFinger touches[MAX_TOUCHES]; } RGSlot;
+// Touch frames arrive on a MultitouchSupport thread; they are copied into fixed slots under a lock,
+// along with running frame statistics (report rate, stalls, lost contacts) that only this thread
+// sees every frame of.
+typedef struct {
+    MTDeviceRef mt;
+    int count;
+    MTFinger touches[MAX_TOUCHES];
+    RGFrameStats stats;
+    double lastContactTs;
+    int prevCount;
+    struct { int id, state; float x, y; } prev[MAX_TOUCHES];
+} RGSlot;
 static os_unfair_lock gLock = OS_UNFAIR_LOCK_INIT;
 static RGSlot gSlots[MAX_DEVICES];
 static int gSlotCount;
+
+static BOOL isContact(int state) { return state >= RGTouchMake && state <= RGTouchBreak; }
+
+static void accumulateStats(RGSlot *s, const MTFinger *f, int n, double ts) {
+    RGFrameStats *st = &s->stats;
+    BOOL contact = NO;
+    for (int i = 0; i < n; i++) if (isContact(f[i].state)) { contact = YES; break; }
+    if (n > 0) st->frames++;
+    if (contact) {
+        st->contactFrames++;
+        double dt = ts - s->lastContactTs;
+        if (s->lastContactTs > 0 && dt > 0 && dt < 0.5) {
+            // Learn the device's frame time from the first few intervals, then flag ones far over it
+            BOOL stall = st->intervals >= 20 && dt > MAX(st->typical * 2.5, st->typical + 0.008);
+            st->intervals++;
+            st->sum += dt;
+            st->sumSq += dt * dt;
+            if (stall) st->stalls++;
+            else st->typical = st->intervals <= 20 ? st->sum / st->intervals : st->typical * 0.98 + dt * 0.02;
+        }
+        s->lastContactTs = ts;
+    } else {
+        s->lastContactTs = 0;   // the next contact starts a new run; idle time is not a stall
+    }
+    for (int i = 0; i < n; i++) {
+        if (!isContact(f[i].state)) continue;
+        BOOL seen = NO;
+        for (int k = 0; k < s->prevCount; k++) if (s->prev[k].id == f[i].identifier && isContact(s->prev[k].state)) { seen = YES; break; }
+        if (!seen) st->strokes++;
+    }
+    // A contact that disappears while still "touching", away from the edges, was lost by the sensor
+    for (int k = 0; k < s->prevCount; k++) {
+        if (s->prev[k].state != RGTouchTouching) continue;
+        BOOL present = NO;
+        for (int i = 0; i < n; i++) if (f[i].identifier == s->prev[k].id) { present = YES; break; }
+        float x = s->prev[k].x, y = s->prev[k].y;
+        if (!present && x > 0.08f && x < 0.92f && y > 0.08f && y < 0.92f) st->lost++;
+    }
+    s->prevCount = n;
+    for (int i = 0; i < n; i++)
+        s->prev[i] = (typeof(s->prev[0])){f[i].identifier, f[i].state, f[i].normalized.pos.x, f[i].normalized.pos.y};
+}
 
 static int contactCallback(MTDeviceRef dev, MTFinger *f, int n, double ts, int frame) {
     if (n < 0) n = 0;
@@ -61,10 +117,18 @@ static int contactCallback(MTDeviceRef dev, MTFinger *f, int n, double ts, int f
         if (gSlots[i].mt != dev) continue;
         if (n) memcpy(gSlots[i].touches, f, sizeof(MTFinger) * (size_t)n);
         gSlots[i].count = n;
+        accumulateStats(&gSlots[i], f, n, ts);
         break;
     }
     os_unfair_lock_unlock(&gLock);
     return 0;
+}
+
+void RGGetFrameStats(int slot, RGFrameStats *out) {
+    os_unfair_lock_lock(&gLock);
+    if (slot >= 0 && slot < gSlotCount) *out = gSlots[slot].stats;
+    else memset(out, 0, sizeof *out);
+    os_unfair_lock_unlock(&gLock);
 }
 
 int RGCopyTouches(int slot, MTFinger *out) {
@@ -83,6 +147,14 @@ static NSString *const kDropSound = @"PlaySoundOnDrop";
 static NSString *const kLogAll = @"LogEveryClick";
 static NSString *const kMatchMs = @"MatchWindowMs";
 static NSString *const kFinishes = @"ColourFinishes";   // { "<ColorID>": "white" | "black" } overrides
+static NSString *const kBluetooth = @"MonitorBluetoothSignal";   // opt-in: needs Bluetooth permission
+
+static double machMs(uint64_t later, uint64_t earlier) {
+    static mach_timebase_info_data_t tb;
+    if (!tb.denom) mach_timebase_info(&tb);
+    if (later < earlier) return -1;
+    return (double)(later - earlier) * tb.numer / tb.denom / 1e6;
+}
 
 static NSString *const kButtonName[4] = {@"", @"Left", @"Right", @"Middle"};
 static int otherButton(int b) { return b == 1 ? 2 : (b == 2 ? 1 : 0); }
@@ -257,6 +329,8 @@ static double animNow(void) { return gFrozenTime > 0 ? gFrozenTime : CFAbsoluteT
     int pingHead;
     BOOL charging, charged, onCable;
     int lowWarn;
+    int rssi;            // dBm, 0 when not monitored or not reported
+    double rssiTime;
 }
 @property (copy) NSString *name, *model, *firmware, *identifier, *transport;
 @property (copy) NSString *productName;   // as the hardware names itself; used to match HID reports
@@ -460,6 +534,9 @@ static void drawSurface(RGKind kind, NSRect r, RGStyle style) {
     [NSGraphicsContext restoreGraphicsState];
 }
 
+NSBezierPath *RGSurfacePath(int kind, NSRect rect) { return surfacePath((RGKind)kind, rect); }
+void RGDrawSurface(int kind, NSRect rect, BOOL darkTop) { drawSurface((RGKind)kind, rect, darkTop ? kDarkStyle : kLightStyle); }
+
 #pragma mark - App icon (drawn in code; build.sh renders it to AppIcon.icns)
 
 static NSImage *appIcon(CGFloat size) {
@@ -518,6 +595,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
     __strong NSString *hidPendingName[4];
     BOOL evtDown[4], anonHidDown[4];
     NSPoint hidPendingPos[4];
+    uint64_t hidStamp[4], evtStamp[4];   // kernel HID report time; time the click event reached us
     long delivered[4], remappedTotal, totalDrops;
     double lastDrop;
     NSString *statusLine;
@@ -538,6 +616,12 @@ static BOOL writeIconPNG(NSString *path, int px) {
 @property (strong) RGCheeseStack *game;
 @property (strong) RGGestureTrainer *trainer;
 @property (strong) RGForceSensor *forceSensor;
+@property (strong) RGLatencyMonitor *monitor;
+@property (strong) RGSelfTest *selfTest;
+@property (strong) RGBluetoothMonitor *bluetooth;
+@property (strong) NSButton *bluetoothCheckbox;
+@property (strong) NSTextField *bluetoothNote;
+@property (strong) NSButton *bluetoothPrivacy;
 @property (strong) NSTextField *matchLabel;
 @property (strong) NSArray<RGDevice *> *devices;
 @property (strong) NSMutableDictionary *hidCache;
@@ -551,8 +635,8 @@ static BOOL writeIconPNG(NSString *path, int px) {
 - (NSString *)colourTextFor:(RGDevice *)d;
 - (double)matchWindow;
 - (CGFloat)topInset;
-- (void)hidButton:(int)b down:(BOOL)down device:(IOHIDDeviceRef)h;
-- (void)event:(int)b down:(BOOL)down;
+- (void)hidButton:(int)b down:(BOOL)down device:(IOHIDDeviceRef)h stamp:(uint64_t)stamp;
+- (void)event:(int)b down:(BOOL)down stamp:(uint64_t)stamp;
 - (void)rescanDevices:(id)sender;
 - (void)refreshBatteryAndColour;
 @end
@@ -562,20 +646,22 @@ static void hidCallback(void *ctx, IOReturn result, void *sender, IOHIDValueRef 
     if (IOHIDElementGetUsagePage(el) != kHIDPage_Button) return;
     uint32_t usage = IOHIDElementGetUsage(el);
     if (usage < 1 || usage > 3) return;
-    [(__bridge RGController *)ctx hidButton:(int)usage down:IOHIDValueGetIntegerValue(value) != 0 device:IOHIDElementGetDevice(el)];
+    [(__bridge RGController *)ctx hidButton:(int)usage down:IOHIDValueGetIntegerValue(value) != 0 device:IOHIDElementGetDevice(el)
+                                      stamp:IOHIDValueGetTimeStamp(value)];
 }
 
 static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef ev, void *ctx) {
     RGController *c = (__bridge RGController *)ctx;
+    uint64_t now = mach_absolute_time();   // when the click reached the session, i.e. when apps can see it
     switch (type) {
         case kCGEventTapDisabledByTimeout:
         case kCGEventTapDisabledByUserInput: CGEventTapEnable(c->tap, true); break;
-        case kCGEventLeftMouseDown:  [c event:1 down:YES]; break;
-        case kCGEventLeftMouseUp:    [c event:1 down:NO];  break;
-        case kCGEventRightMouseDown: [c event:2 down:YES]; break;
-        case kCGEventRightMouseUp:   [c event:2 down:NO];  break;
-        case kCGEventOtherMouseDown: [c event:3 down:YES]; break;
-        case kCGEventOtherMouseUp:   [c event:3 down:NO];  break;
+        case kCGEventLeftMouseDown:  [c event:1 down:YES stamp:now]; break;
+        case kCGEventLeftMouseUp:    [c event:1 down:NO stamp:now];  break;
+        case kCGEventRightMouseDown: [c event:2 down:YES stamp:now]; break;
+        case kCGEventRightMouseUp:   [c event:2 down:NO stamp:now];  break;
+        case kCGEventOtherMouseDown: [c event:3 down:YES stamp:now]; break;
+        case kCGEventOtherMouseUp:   [c event:3 down:NO stamp:now];  break;
         default: break;
     }
     return ev;
@@ -685,7 +771,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     // Hardware details and the settings the driver is applying
     NSMutableArray *hw = [NSMutableArray array];
     if (d.firmware) [hw addObject:[@"Firmware " stringByAppendingString:d.firmware]];
-    if (d.transport) [hw addObject:d.transport];
+    if (d.transport) [hw addObject:d->rssi ? [NSString stringWithFormat:@"%@ %d dBm", d.transport, d->rssi] : d.transport];
     if (d.identifier.length && !c.demo) [hw addObject:d.identifier];
     NSMutableArray *info = [NSMutableArray arrayWithObject:hw.count ? [hw componentsJoinedByString:@" · "] : @"No hardware details reported"];
     [info addObject:[c colourTextFor:d]];
@@ -970,13 +1056,14 @@ static double easeOutCubic(double t) { return 1 - pow(1 - t, 3); }
 #pragma mark - Controller
 
 static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"trackpadSettings", *const kTBGame = @"cheeseStack",
-                *const kTBTrainer = @"gestureTrainer", *const kTBForce = @"forceSensor", *const kTBReset = @"resetCounters";
+                *const kTBTrainer = @"gestureTrainer", *const kTBForce = @"forceSensor", *const kTBReset = @"resetCounters",
+                *const kTBMonitor = @"latencyMonitor", *const kTBSelfTest = @"selfTest";
 
 @implementation RGController
 
 + (void)initialize {
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
-        kKeepOnTop: @NO, kBuiltInMode: @0, kDropSound: @YES, kLogAll: @YES, kMatchMs: @400, kFinishes: @{}}];
+        kKeepOnTop: @NO, kBuiltInMode: @0, kDropSound: @YES, kLogAll: @YES, kMatchMs: @400, kFinishes: @{}, kBluetooth: @NO}];
 }
 
 - (double)matchWindow { return MAX(100, [NSUserDefaults.standardUserDefaults integerForKey:kMatchMs]) / 1000.0; }
@@ -1037,6 +1124,12 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     self.longFmt = [NSDateFormatter new];
     self.longFmt.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
     if (self.live) [self openLogFile];
+    self.monitor = [RGLatencyMonitor new];
+    __weak RGController *weakSelf = self;
+    self.monitor.devices = ^NSArray<NSDictionary *> * { return weakSelf.deviceInfos; };
+    self.monitor.bluetoothStatus = ^NSString * { return weakSelf.bluetoothGraphStatus; };
+    self.monitor.openSettings = ^{ [weakSelf showSettings:nil]; };
+    self.bluetooth = [RGBluetoothMonitor new];
     [self buildMenu];
     [self buildWindow];
     [self rescanDevices:nil];
@@ -1053,10 +1146,14 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         if ([args containsObject:@"--demo-trainer"]) { self.trainer = [RGGestureTrainer new]; [self.trainer showDemo]; }
         if ([args containsObject:@"--demo-game"]) { [self showGame:nil]; [self.game showDemo]; }
         if ([args containsObject:@"--demo-force"]) { self.forceSensor = [RGForceSensor new]; [self.forceSensor showDemo]; }
+        if ([args containsObject:@"--demo-latency"]) [self.monitor showDemo];
+        if ([args containsObject:@"--demo-selftest"]) { self.selfTest = [RGSelfTest new]; [self.selfTest showDemo]; }
     } else {
         [self setupHID];
         [self setupTap];
         [self watchDevices];
+        [self.monitor start];
+        [self setupBluetooth];
         [self updateStatus];
         [self log:[NSString stringWithFormat:@"· %@ %@ started: button reports %@, click events %@ | %@", APP_NAME, APP_VERSION,
                    hidOK ? @"ok" : @"unavailable", tapOK ? @"ok" : @"unavailable", statusLine]];
@@ -1064,6 +1161,8 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         if ([args containsObject:@"--show-trainer"]) [self showTrainer:nil];
         if ([args containsObject:@"--show-game"]) [self showGame:self];
         if ([args containsObject:@"--show-force"]) [self showForce:nil];
+        if ([args containsObject:@"--show-latency"]) [self showMonitor:nil];
+        if ([args containsObject:@"--show-selftest"]) [self showSelfTest:nil];
     }
     NSTimer *draw = [NSTimer timerWithTimeInterval:1.0 / 30 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     NSTimer *status = [NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(updateStatus) userInfo:nil repeats:YES];
@@ -1148,6 +1247,9 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     [self add:dev title:@"Rescan Devices" action:@selector(rescanDevices:) key:@"r" modifiers:cmdShift symbol:@"arrow.triangle.2.circlepath"];
     [self add:dev title:@"Reset Counters" action:@selector(resetCounters:) key:@"k" modifiers:0 symbol:@"arrow.counterclockwise"];
     [dev addItem:NSMenuItem.separatorItem];
+    [self add:dev title:@"Latency Monitor" action:@selector(showMonitor:) key:@"d" modifiers:0 symbol:@"waveform.path.ecg"];
+    [self add:dev title:@"Hardware Self-Test" action:@selector(showSelfTest:) key:@"e" modifiers:0 symbol:@"checkmark.seal"];
+    [dev addItem:NSMenuItem.separatorItem];
     [self add:dev title:@"Open Log File" action:@selector(openLog:) key:@"l" modifiers:0 symbol:@"doc.text"];
 
     NSMenu *gym = [self addMenu:@"Gym" to:bar];
@@ -1198,7 +1300,8 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 }
 
 - (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar {
-    return @[kTBMouse, kTBTrackpad, NSToolbarFlexibleSpaceItemIdentifier, kTBGame, kTBTrainer, kTBForce, NSToolbarSpaceItemIdentifier, kTBReset];
+    return @[kTBMouse, kTBTrackpad, NSToolbarFlexibleSpaceItemIdentifier, kTBMonitor, kTBSelfTest, NSToolbarSpaceItemIdentifier,
+             kTBGame, kTBTrainer, kTBForce, NSToolbarSpaceItemIdentifier, kTBReset];
 }
 - (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar {
     return [[self toolbarDefaultItemIdentifiers:toolbar] arrayByAddingObject:NSToolbarSpaceItemIdentifier];
@@ -1211,6 +1314,8 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         kTBGame:     @[@"Cheese Stack", @"gamecontroller", @"Play Cheese Stack, a click workout", @"showGame:"],
         kTBTrainer:  @[@"Gesture Trainer", @"hand.draw", @"Practise every gesture you have switched on", @"showTrainer:"],
         kTBForce:    @[@"Force Sensor", @"gauge.with.dots.needle.67percent", @"Graph click pressure from a Force Touch trackpad", @"showForce:"],
+        kTBMonitor:  @[@"Latency Monitor", @"waveform.path.ecg", @"Graph click latency, touch report rate and Bluetooth signal", @"showMonitor:"],
+        kTBSelfTest: @[@"Hardware Self-Test", @"checkmark.seal", @"Test a device for dead zones, phantom touches and a working haptic engine", @"showSelfTest:"],
         kTBReset:    @[@"Reset Counters", @"arrow.counterclockwise", @"Reset the click counters", @"resetCounters:"]}[ident];
     if (!spec) return nil;
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:ident];
@@ -1347,13 +1452,106 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     [self activate];
 }
 
-// Devices as plain dictionaries for the Gym windows.
+// Devices as plain dictionaries for the Gym and diagnostic windows.
 - (NSArray<NSDictionary *> *)deviceInfos {
     NSMutableArray *a = [NSMutableArray array];
-    for (RGDevice *d in self.visibleDevices)
-        [a addObject:@{@"name": d.name, @"kind": d->kind == RGKindMouse ? @"mouse" : @"trackpad",
-                       @"slot": @(d->slot), @"prefs": d.prefs ?: @{}}];
+    for (RGDevice *d in self.visibleDevices) {
+        NSMutableDictionary *m = [@{@"name": d.name, @"key": d.key, @"kind": d->kind == RGKindMouse ? @"mouse" : @"trackpad",
+                                    @"builtIn": @(d->kind == RGKindBuiltIn), @"slot": @(d->slot), @"prefs": d.prefs ?: @{},
+                                    @"model": d.model ?: @"", @"productID": @(d->productID), @"darkTop": @([self styleFor:d].darkTop),
+                                    @"widthMM": @(d->widthMM), @"heightMM": @(d->heightMM)} mutableCopy];
+        if (d.firmware) m[@"firmware"] = d.firmware;
+        if (d.transport) m[@"transport"] = d.transport;
+        if (d.identifier) m[@"serial"] = d.identifier;
+        [a addObject:m];
+    }
     return a;
+}
+
+- (void)showMonitor:(id)sender {
+    [self.monitor show];
+    [self applyWindowLevel];
+    [self activate];
+}
+
+- (void)showSelfTest:(id)sender {
+    if (!self.selfTest) {
+        self.selfTest = [RGSelfTest new];
+        __weak RGController *weakSelf = self;
+        self.selfTest.devices = ^NSArray<NSDictionary *> * { return weakSelf.deviceInfos; };
+        self.selfTest.log = ^(NSString *line) { [weakSelf log:line]; };
+        self.selfTest.latencySummary = ^NSString * { return weakSelf.monitor.summary; };
+    }
+    [self.selfTest show];
+    [self applyWindowLevel];
+    [self activate];
+}
+
+#pragma mark Bluetooth signal (opt-in)
+
+- (void)setupBluetooth {
+    __weak RGController *weakSelf = self;
+    self.bluetooth.onChange = ^{ [weakSelf bluetoothStateChanged]; };
+    self.bluetooth.onSample = ^(NSDictionary<NSString *, NSNumber *> *rssi) { [weakSelf bluetoothSample:rssi]; };
+    if ([NSUserDefaults.standardUserDefaults boolForKey:kBluetooth]) [self.bluetooth start];
+}
+
+- (void)bluetoothStateChanged {
+    RGBluetoothState s = self.bluetooth.state;
+    if (s == RGBluetoothOn) [self log:@"· Bluetooth signal monitoring on"];
+    if (s == RGBluetoothDenied) {
+        [self log:@"✗ Bluetooth signal monitoring needs Bluetooth access: allow RodentGym in Privacy & Security → Bluetooth"];
+        [NSUserDefaults.standardUserDefaults setBool:NO forKey:kBluetooth];
+    }
+    if (s != RGBluetoothOn) for (RGDevice *d in self.devices) d->rssi = 0;
+    [self updateBluetoothSettingsUI];
+    self.view.needsDisplay = YES;
+}
+
+- (void)bluetoothSample:(NSDictionary<NSString *, NSNumber *> *)rssi {
+    double now = CFAbsoluteTimeGetCurrent();
+    for (RGDevice *d in self.devices) {
+        NSString *addr = [RGBluetoothMonitor normalisedAddress:d.identifier];
+        NSNumber *v = addr ? rssi[addr] : nil;
+        if (!v) { if (now - d->rssiTime > 10) d->rssi = 0; continue; }
+        int before = d->rssi;
+        d->rssi = v.intValue;
+        d->rssiTime = now;
+        [self.monitor recordSignal:d->rssi device:d.key name:d.name];
+        if (before && before >= -80 && d->rssi < -80)
+            [self log:[NSString stringWithFormat:@"· %@: Bluetooth signal poor (%d dBm)", d.name, d->rssi]];
+    }
+    self.view.needsDisplay = YES;
+}
+
+// Nil when the monitor has signal data to show; otherwise why not.
+- (NSString *)bluetoothGraphStatus {
+    switch (self.bluetooth.state) {
+        case RGBluetoothOff: return @"Bluetooth signal monitoring is off. Turn it on in Settings (⌘,).";
+        case RGBluetoothOn: return nil;
+        default: return self.bluetooth.statusText;
+    }
+}
+
+- (void)toggleBluetooth:(NSButton *)b {
+    BOOL on = b.state == NSControlStateValueOn;
+    [NSUserDefaults.standardUserDefaults setBool:on forKey:kBluetooth];
+    if (on) [self.bluetooth start];
+    else { [self.bluetooth stop]; [self log:@"· Bluetooth signal monitoring off"]; }
+    [self updateBluetoothSettingsUI];
+}
+
+- (void)openBluetoothPrivacy:(id)sender {
+    [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth"]];
+}
+
+- (void)updateBluetoothSettingsUI {
+    RGBluetoothState s = self.bluetooth.state;
+    self.bluetoothCheckbox.state = (s == RGBluetoothOn || s == RGBluetoothWaiting || s == RGBluetoothPoweredOff) ? NSControlStateValueOn : NSControlStateValueOff;
+    NSString *base = @"Graphs signal strength in the Latency Monitor and shows it on each device. macOS asks for Bluetooth permission the first time you turn this on.";
+    self.bluetoothNote.stringValue = s == RGBluetoothOff ? base : self.bluetooth.statusText;
+    self.bluetoothNote.textColor = s == RGBluetoothDenied ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+    self.bluetoothPrivacy.hidden = s != RGBluetoothDenied;
 }
 
 - (void)showForce:(id)sender {
@@ -1499,6 +1697,16 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 
     NSGridRow *spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
     spacer.height = 6;
+    self.bluetoothCheckbox = [NSButton checkboxWithTitle:@"Monitor signal strength" target:self action:@selector(toggleBluetooth:)];
+    [grid addRowWithViews:@[[self formLabel:@"Bluetooth:"], self.bluetoothCheckbox]];
+    self.bluetoothNote = [self note:@"" width:320];
+    [grid addRowWithViews:@[[NSGridCell emptyContentView], self.bluetoothNote]];
+    self.bluetoothPrivacy = [NSButton buttonWithTitle:@"Open Privacy & Security…" target:self action:@selector(openBluetoothPrivacy:)];
+    [grid addRowWithViews:@[[NSGridCell emptyContentView], self.bluetoothPrivacy]];
+    [self updateBluetoothSettingsUI];
+
+    spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
+    spacer.height = 6;
     [grid addRowWithViews:@[[self formLabel:@"Dropped clicks:"], [self checkbox:@"Play a sound" key:kDropSound]]];
     [grid addRowWithViews:@[[NSGridCell emptyContentView], [self checkbox:@"Log every click, not just problems" key:kLogAll]]];
     NSSlider *slider = [NSSlider sliderWithValue:[ud integerForKey:kMatchMs] minValue:150 maxValue:1000 target:self action:@selector(matchChanged:)];
@@ -1623,8 +1831,8 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     CFIndex count = mtList ? MIN(CFArrayGetCount(mtList), MAX_DEVICES) : 0;
     os_unfair_lock_lock(&gLock);
     for (CFIndex i = 0; i < count; i++) {
+        memset(&gSlots[i], 0, sizeof gSlots[i]);
         gSlots[i].mt = (MTDeviceRef)CFArrayGetValueAtIndex(mtList, i);
-        gSlots[i].count = 0;
     }
     gSlotCount = (int)count;
     os_unfair_lock_unlock(&gLock);
@@ -1642,6 +1850,20 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         }
     }
     [found sortUsingComparator:^NSComparisonResult(RGDevice *a, RGDevice *b) { return [@(a->kind) compare:@(b->kind)]; }];
+    // Connects and disconnects, for the log and the Latency Monitor (built-in trackpads come and go with the lid)
+    if (self.live && self.devices) {
+        NSMutableDictionary<NSString *, RGDevice *> *before = [NSMutableDictionary dictionary], *after = [NSMutableDictionary dictionary];
+        for (RGDevice *d in self.devices) if (d->kind != RGKindBuiltIn) before[d.key] = d;
+        for (RGDevice *d in found) if (d->kind != RGKindBuiltIn) after[d.key] = d;
+        for (NSString *k in before) if (!after[k]) {
+            [self log:[NSString stringWithFormat:@"· %@ disconnected", before[k].name]];
+            [self.monitor recordLink:NO device:before[k].name];
+        }
+        for (NSString *k in after) if (!before[k]) {
+            [self log:[NSString stringWithFormat:@"· %@ connected", after[k].name]];
+            [self.monitor recordLink:YES device:after[k].name];
+        }
+    }
     self.devices = found;
     for (RGDevice *d in found) self.lastSecondary[d.key] = d.secondaryDescription;
     [self refreshBatteryAndColour];
@@ -1789,7 +2011,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 
 - (BOOL)logAll { return [NSUserDefaults.standardUserDefaults boolForKey:kLogAll]; }
 
-- (void)hidButton:(int)b down:(BOOL)down device:(IOHIDDeviceRef)h {
+- (void)hidButton:(int)b down:(BOOL)down device:(IOHIDDeviceRef)h stamp:(uint64_t)stamp {
     NSString *name = nil;
     RGDevice *d = [self deviceForHID:h name:&name];
     BOOL *state = d ? d->hidDown : anonHidDown;
@@ -1799,9 +2021,15 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     if (d) d->sent[b]++;
     double now = CFAbsoluteTimeGetCurrent(), win = self.matchWindow;
     int o = otherButton(b);
-    if (evtPending[b] > 0 && now - evtPending[b] < win) { evtPending[b] = 0; [self matched:b name:name]; }
-    else if (o && evtPending[o] > 0 && now - evtPending[o] < win) { evtPending[o] = 0; [self sent:b delivered:o device:d name:name]; }
-    else { hidPending[b] = now; hidPendingDevice[b] = d; hidPendingName[b] = name; }
+    if (evtPending[b] > 0 && now - evtPending[b] < win) {
+        evtPending[b] = 0;
+        [self matched:b name:name latency:machMs(evtStamp[b], stamp)];
+    } else if (o && evtPending[o] > 0 && now - evtPending[o] < win) {
+        evtPending[o] = 0;
+        [self sent:b delivered:o device:d name:name latency:machMs(evtStamp[o], stamp)];
+    } else {
+        hidPending[b] = now; hidPendingDevice[b] = d; hidPendingName[b] = name; hidStamp[b] = stamp;
+    }
     if (d) {
         hidPendingPos[b] = [self pingPointFor:d button:b];
         [d addPing:b at:hidPendingPos[b]];
@@ -1809,14 +2037,19 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     self.view.needsDisplay = YES;
 }
 
-- (void)event:(int)b down:(BOOL)down {
+- (void)event:(int)b down:(BOOL)down stamp:(uint64_t)stamp {
     if (!down) { evtDown[b] = NO; self.view.needsDisplay = YES; return; }
     evtDown[b] = YES;
     delivered[b]++;
     int o = otherButton(b);
-    if (hidPending[b] > 0) { hidPending[b] = 0; [self matched:b name:hidPendingName[b]]; }
-    else if (o && hidPending[o] > 0) { hidPending[o] = 0; [self sent:o delivered:b device:hidPendingDevice[o] name:hidPendingName[o]]; }
-    else {
+    if (hidPending[b] > 0) {
+        hidPending[b] = 0;
+        [self matched:b name:hidPendingName[b] latency:machMs(stamp, hidStamp[b])];
+    } else if (o && hidPending[o] > 0) {
+        hidPending[o] = 0;
+        [self sent:o delivered:b device:hidPendingDevice[o] name:hidPendingName[o] latency:machMs(stamp, hidStamp[o])];
+    } else {
+        evtStamp[b] = stamp;
         evtPending[b] = CFAbsoluteTimeGetCurrent();
         evtToucher[b] = [self touchedDevice];
         if (evtToucher[b]) [evtToucher[b] addPing:b at:[self pingPointFor:evtToucher[b] button:b]];   // e.g. trackpad clicks with no button report
@@ -1824,13 +2057,17 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     self.view.needsDisplay = YES;
 }
 
-- (void)matched:(int)b name:(NSString *)name {
-    if (self.logAll) [self log:[NSString stringWithFormat:@"✓ %@ click: %@", kButtonName[b], name ?: @"unknown device"]];
+static NSString *latencyText(double ms) { return ms >= 0 ? [NSString stringWithFormat:@" · %.1f ms", ms] : @""; }
+
+- (void)matched:(int)b name:(NSString *)name latency:(double)ms {
+    [self.monitor recordClick:b latency:ms device:name];
+    if (self.logAll) [self log:[NSString stringWithFormat:@"✓ %@ click: %@%@", kButtonName[b], name ?: @"unknown device", latencyText(ms)]];
 }
 
-- (void)sent:(int)from delivered:(int)to device:(RGDevice *)d name:(NSString *)name {
+- (void)sent:(int)from delivered:(int)to device:(RGDevice *)d name:(NSString *)name latency:(double)ms {
+    [self.monitor recordClick:to latency:ms device:name];
     if (d && d->kind != RGKindMouse && from == 1 && to == 2) {   // a trackpad's secondary click: expected
-        if (self.logAll) [self log:[NSString stringWithFormat:@"✓ Right click: %@ (%@)", name, d.secondaryDescription.lowercaseString]];
+        if (self.logAll) [self log:[NSString stringWithFormat:@"✓ Right click: %@ (%@)%@", name, d.secondaryDescription.lowercaseString, latencyText(ms)]];
         return;
     }
     if (d) d->remapped++;
@@ -1847,6 +2084,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
             if (d) { d->dropped[b]++; [d addPing:3 at:hidPendingPos[b]]; }
             totalDrops++;
             lastDrop = now;
+            [self.monitor recordDrop:b device:hidPendingName[b]];
             if ([NSUserDefaults.standardUserDefaults boolForKey:kDropSound]) [[NSSound soundNamed:@"Basso"] play];
             [self showToast:[NSString stringWithFormat:@"%@ click dropped by macOS", kButtonName[b]]];
             [self log:[NSString stringWithFormat:@"✗ DROPPED %@ click: %@ sent it, macOS delivered nothing | %@%@",
@@ -1876,6 +2114,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &len, NULL, 0);
     NSString *p = pressure >= 4 ? @"critical" : pressure >= 2 ? @"warning" : @"normal";
     statusLine = [NSString stringWithFormat:@"Memory free %d%% · pressure %@ · swap used %.1f GB", level, p, sw.xsu_used / 1073741824.0];
+    if (self.live) [self.monitor recordMemoryPressure:MAX(1, pressure) free:level];
     if (self.live) {
         NSString *listening = hidOK && tapOK ? @"Listening" : @"Partly listening (see Help)";
         self.window.subtitle = [NSString stringWithFormat:@"%@ · %@", listening, statusLine];
@@ -1952,12 +2191,12 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     [lines addObjectsFromArray:@[
         [NSString stringWithFormat:@"09:41:02 · RodentGym %@ started: button reports ok, click events ok", APP_VERSION],
         @"09:41:02 · Devices: Magic Mouse (Magic Mouse 2 (Lightning), firmware 3.1.1); Magic Trackpad (Magic Trackpad 2 (Lightning), firmware 8.7.1)",
-        @"09:41:09 ✓ Left click: Magic Mouse",
-        @"09:41:11 ✓ Right click: Magic Trackpad (click or tap with two fingers)",
+        @"09:41:09 ✓ Left click: Magic Mouse · 4.6 ms",
+        @"09:41:11 ✓ Right click: Magic Trackpad (click or tap with two fingers) · 3.9 ms",
         @"09:41:15 ≠ Magic Mouse: secondary click changed from \"Off — whole surface clicks left\" to \"Right side (right-handed)\"",
-        @"09:41:18 ✓ Right click: Magic Mouse",
+        @"09:41:18 ✓ Right click: Magic Mouse · 5.2 ms",
         @"09:42:40 ✗ DROPPED right click: Magic Mouse sent it, macOS delivered nothing | secondary click: Right side (right-handed) | Memory free 21% · pressure warning",
-        @"09:42:44 ✓ Right click: Magic Mouse"]];
+        @"09:42:44 ✓ Right click: Magic Mouse · 31.7 ms"]];
     self.view.needsDisplay = YES;
 }
 
@@ -1985,6 +2224,10 @@ int main(int argc, const char *argv[]) {
         if (i != NSNotFound && i + 1 < args.count) return [[RGCheeseStack new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
         i = [args indexOfObject:@"--snapshot-force"];
         if (i != NSNotFound && i + 1 < args.count) return [[RGForceSensor new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
+        i = [args indexOfObject:@"--snapshot-latency"];
+        if (i != NSNotFound && i + 1 < args.count) return [[RGLatencyMonitor new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
+        i = [args indexOfObject:@"--snapshot-selftest"];
+        if (i != NSNotFound && i + 1 < args.count) return [[RGSelfTest new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
         i = [args indexOfObject:@"--snapshot-trainer"];
         if (i != NSNotFound && i + 1 < args.count) return [[RGGestureTrainer new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
 

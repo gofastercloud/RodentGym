@@ -2,11 +2,11 @@
 
 **See what your Magic Mouse and Magic Trackpad send, and what macOS actually delivers.**
 
-RodentGym is a small native macOS app for diagnosing and exercising pointer input. Right-click doing nothing, clicks going missing, a gesture that seems to have stopped working: RodentGym shows each step between your finger and the app and tells you where things go wrong. It also has three workouts for reproducing intermittent problems: a falling-block game, a gesture trainer and a force sensor.
+RodentGym is a small native macOS app for diagnosing and exercising pointer input. Right-click doing nothing, clicks going missing, a gesture that seems to have stopped working: RodentGym shows each step between your finger and the app and tells you where things go wrong. It measures click latency, touch report rate and Bluetooth signal on one timeline, and runs a hardware self-test for dead zones, phantom touches and the haptic engine. It also has three workouts for reproducing intermittent problems: a falling-block game, a gesture trainer and a force sensor.
 
 ![RodentGym showing a Magic Mouse and Magic Trackpad](docs/screenshot.png)
 
-> **Status: 0.3.0, an early release.** RodentGym reads touch data from a private Apple framework, so treat it as a diagnostic tool rather than something to rely on across macOS updates.
+> **Status: 0.4.0, an early release.** RodentGym reads touch data from a private Apple framework, so treat it as a diagnostic tool rather than something to rely on across macOS updates.
 
 ## What it shows
 
@@ -25,6 +25,37 @@ On a MacBook, RodentGym notices the built-in trackpad and names it after your Ma
 When the hardware reports a click and macOS never delivers it, RodentGym flags it as **dropped**: a glass alert appears, a sound plays, and the log records the memory state at that moment. Clicks that arrive as the wrong button are flagged as **remapped**. Changes to secondary-click settings are logged as they happen. Live memory status is shown in the window's subtitle.
 
 Everything goes to `~/Library/Logs/RodentGym.log`, so you can line up intermittent problems with whatever else the Mac was doing at the time.
+
+## Latency Monitor
+
+Open it with **Devices › Latency Monitor** (⌘D) or the toolbar.
+
+![Latency Monitor](docs/latency-monitor.png)
+
+Three graphs on one two-minute timeline, recorded from launch, so you can see whether problems line up:
+
+- **Click latency**: for every click, the time from the Mac receiving the device's button report (the kernel's HID timestamp) to the click event reaching the login session. A few milliseconds is normal. Dropped clicks are marked with a red ✕ and a line through every graph.
+- **Touch report rate**: frames per second from each multitouch device while it's touched, measured from every frame the driver delivers, with jitter. Frames that arrive far later than the device's usual interval are marked as **stalls**.
+- **Bluetooth signal** in dBm for each Bluetooth device (optional, see below).
+- **Memory pressure** is shaded behind all three, and **connects and disconnects** are marked across them.
+
+If latency jumps, stalls appear or clicks drop only while memory is under pressure, the Mac is the bottleneck. If they line up with weak signal or disconnects, it's the radio link. Tiles underneath summarise the median and 95th-percentile latency, drops, report rate, signal and memory.
+
+**Bluetooth signal is opt-in.** It needs Bluetooth permission, so RodentGym doesn't touch Bluetooth until you tick **Settings › Bluetooth › Monitor signal strength**; that's when macOS asks. It then reads RSSI from devices that are already connected (an HCI Read RSSI on the existing link via IOBluetooth), every 2 seconds, and shows it on each device's card too. It never scans, pairs or connects.
+
+## Hardware Self-Test
+
+Open it with **Devices › Hardware Self-Test** (⌘E) or the toolbar.
+
+![Hardware Self-Test](docs/self-test.png)
+
+Three short checks for faults in the device itself, for whichever device you pick:
+
+- **Surface Coverage**: wipe one finger over the whole surface until it's green. Areas that never respond are dead zones. RodentGym also counts strokes the sensor lost partway across the surface (a contact that vanished while still touching, away from the edges).
+- **Phantom Touch**: hands off for 10 seconds. Any contact the device reports while no one is touching it points to moisture, dirt, interference or a failing sensor.
+- **Haptics** (Force Touch trackpads): rest a finger on the trackpad and play three patterns through the haptic engine, which is also what makes the click. RodentGym checks a finger was actually on the trackpad while they played.
+
+**Copy Report** puts every result on the clipboard as plain text, with each device's model, firmware and serial number and the Latency Monitor's summary, ready for an Apple support case.
 
 ## Gesture Trainer
 
@@ -72,7 +103,7 @@ RodentGym is a native AppKit app that follows Apple's current macOS design guida
 - **SF Symbols** in the toolbar and menus, standard menu structure and shortcuts, and a standard settings form.
 - **Accessibility**: the custom views expose their content to VoiceOver, and recognised gestures and dropped clicks are announced.
 - **Smooth and frugal**: animation runs on a display link at the screen's refresh rate (up to 120 Hz on ProMotion) and stops when nothing is moving.
-- **Hardened runtime** signing, secure state restoration, and no network access.
+- **Hardened runtime** signing, secure state restoration, no network access, and no Bluetooth access unless you turn it on.
 
 ## Requirements
 
@@ -94,8 +125,8 @@ Other options:
 ./build.sh --no-install   # build only
 ./build.sh --screenshot   # rebuild the images in docs/ with anonymised demo data
 
-# Open straight into the Gym
-open ~/Applications/RodentGym.app --args --show-trainer --show-game --show-force
+# Open straight into a tool
+open ~/Applications/RodentGym.app --args --show-latency --show-selftest --show-trainer --show-game --show-force
 ```
 
 There's no Xcode project: the app is a few Objective-C files built with `clang`, ad-hoc signed with the hardened runtime for local use.
@@ -111,6 +142,11 @@ There's no Xcode project: the app is a few Objective-C files built with `clang`,
 | Gesture settings | Driver preferences, `com.apple.dock`, global defaults | Which gestures are on, and with how many fingers |
 | Click pressure | `NSEvent` pressure events (stage and pressure) | How hard each click and Force Click was |
 | Battery | Accessory power sources (`IOPSCopyPowerSourcesByType`, as used by `pmset -g accps`) | Level, charging, on cable or battery |
+| Click latency | `IOHIDValueGetTimeStamp` vs `mach_absolute_time` in the event tap | Time from button report to delivered click |
+| Report rate, stalls, lost contacts | Every MultitouchSupport frame, accumulated on the driver's thread | How steadily each device reports, and whether it loses touches |
+| Bluetooth signal (opt-in) | `IOBluetoothDevice.rawRSSI`; permission via CoreBluetooth | Link quality in dBm |
+| Haptics | `NSHapticFeedbackManager` | Whether the trackpad's haptic engine works |
+| Memory pressure | `kern.memorystatus_vm_pressure_level`, `vm.swapusage` | Whether the Mac was struggling at the time |
 
 A button report is matched against the click event that follows it within a configurable window (400 ms by default). Hot-plugging is handled through IOKit notifications.
 
@@ -130,10 +166,13 @@ RodentGym only listens. It never blocks, changes or generates input, and it need
 
 Watching mouse click events doesn't normally need a permission prompt. If click events show as unavailable, allow RodentGym under **System Settings › Privacy & Security › Input Monitoring**.
 
+Bluetooth permission is only requested when you turn on signal monitoring. Because a locally built app is ad-hoc signed, each rebuild has a new signature and macOS may ask again.
+
 ## Limitations
 
 - Touch data comes from Apple's **private** MultitouchSupport framework, which isn't a supported API and could change in any macOS update. It also rules out the Mac App Store.
 - Colour comes from the `ColorID` each accessory reports. Apple doesn't document it, but the values match the colour table in Apple's Continuity proximity-pairing messages ([furiousMAC/continuity](https://github.com/furiousMAC/continuity)): 0 White, 1 Black, 2 Red, 3 Blue, 4 Pink, 5 Grey, 6 Silver, 7 Gold, 8 Rose Gold, 9 Space Grey, 10 Dark Blue, 11 Light Blue, 12 Yellow. This has been confirmed on a white Magic Mouse 2 (0), a space grey Magic Trackpad 2 (5) and a space grey MacBook's built-in trackpad (9). If a device is drawn in the wrong finish, override it in Settings, and please open an issue with the model and code.
+- Click latency starts when the Mac receives the button report, so Bluetooth air time isn't included, and trackpad clicks that arrive without a button report have no latency figure. Stall and lost-contact detection are heuristics on the driver's frame stream and haven't yet been validated against known-faulty hardware.
 - System gestures are recognised with simple thresholds on raw touches. Unusual technique can be misread. The trackpad corner area for secondary clicks is drawn approximately.
 - Model names are known for the Lightning-era Magic Mouse 2 and Magic Trackpad 2 and the first generation. Other models show their product ID.
 - The app icon is a classic `.icns` file. A layered Icon Composer icon needs Xcode.

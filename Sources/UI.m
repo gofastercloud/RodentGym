@@ -75,3 +75,14 @@ void RGDrawLight(NSRect rect, NSString *label, BOOL on, NSColor *onColour) {
 BOOL RGReduceMotion(void) {
     return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
 }
+
+void RGDrawPill(NSRect rect, NSString *label, NSColor *colour) {
+    CGFloat r = rect.size.height / 2;
+    [[colour colorWithAlphaComponent:0.16] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:rect xRadius:r yRadius:r] fill];
+    CGFloat d = 7;
+    [colour setFill];
+    [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(rect.origin.x + 9, NSMidY(rect) - d / 2, d, d)] fill];
+    RGDrawText(label, NSMakeRect(rect.origin.x + 21, NSMidY(rect) - 8, rect.size.width - 28, 16),
+               [NSFont systemFontOfSize:11.5 weight:NSFontWeightSemibold], colour, NSTextAlignmentLeft);
+}

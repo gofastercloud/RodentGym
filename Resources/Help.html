@@ -48,6 +48,25 @@
   <li>Gestures switched off in System Settings show as off. Use the toolbar buttons to open Trackpad or Mouse settings and change them.</li>
 </ul>
 
+<h2>Latency Monitor</h2>
+<p>Three graphs on one two-minute timeline, so you can see whether problems line up. Open it with <b>Devices › Latency Monitor</b> (⌘D). It records from the moment RodentGym starts, so recent history is already there.</p>
+<ul>
+  <li><b>Click latency</b>: for each click, the time from the Mac receiving the button report to the click reaching apps. A few milliseconds is normal. Dropped clicks show as a red ✕ with a line through every graph.</li>
+  <li><b>Touch report rate</b>: how many touch frames per second each device sends while you touch it. A steady line is healthy. A ragged line or red ▲ <b>stalls</b> (frames arriving late) point to a busy Mac or a weak wireless link.</li>
+  <li><b>Bluetooth signal</b> for each Bluetooth device, if you turn it on in Settings. Above −60 dBm is excellent; below −80 dBm is poor and can cause lag and dropouts. Move the device closer, or away from USB 3 hubs and 2.4 GHz Wi-Fi gear.</li>
+  <li>Orange shading marks moments of <b>memory pressure</b>. Dotted lines mark devices <b>connecting and disconnecting</b>.</li>
+</ul>
+<p>If latency jumps, stalls appear or clicks drop only inside the shaded areas, the Mac is the bottleneck, not the device. If they line up with weak signal or disconnects, it's the wireless link.</p>
+
+<h2>Hardware Self-Test</h2>
+<p>Three short checks for faults in the device itself. Open it with <b>Devices › Hardware Self-Test</b> (⌘E), choose the device in the toolbar, then pick a test.</p>
+<ul>
+  <li><b>Surface Coverage</b>: wipe one finger slowly over the whole surface until it's green. Red areas at the end didn't respond. If a patch never lights up however you wipe it, that part of the sensor isn't working. <b>Lost</b> counts strokes the sensor dropped partway across.</li>
+  <li><b>Phantom Touch</b>: take your hands away for 10 seconds. A healthy device reports nothing. Contacts appearing on their own usually mean moisture, dirt, a nearby charger or metal, or a failing sensor.</li>
+  <li><b>Haptics</b> (Force Touch trackpads): rest a finger on the trackpad and play three taps through its haptic engine. A Magic Mouse and the first Magic Trackpad click mechanically, so this test doesn't apply to them.</li>
+</ul>
+<p><b>Copy Report</b> puts all the results, with each device's model, firmware and serial number and the Latency Monitor's summary, on the clipboard, ready for an Apple support case.</p>
+
 <h2>Force Sensor</h2>
 <p>A scrolling graph of how hard you press on a Force Touch trackpad. Open it with <b>Gym › Force Sensor</b> (⌘J) and press with the pointer over the graph.</p>
 <ul>
@@ -69,6 +88,7 @@
 <ul>
   <li><b>Keep RodentGym on top</b> keeps the window visible while you click in other apps.</li>
   <li><b>Built-in trackpad</b>: <i>Automatic</i> shows a MacBook's own trackpad whenever the lid is open and hides it when the lid is closed. <i>Always show</i> keeps the card, marked "Lid closed" when it's unavailable.</li>
+  <li><b>Bluetooth › Monitor signal strength</b> is off until you turn it on. The first time, macOS asks whether RodentGym may use Bluetooth; it only reads signal strength from devices that are already connected. If you said no, the setting shows a button to <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth">Privacy &amp; Security › Bluetooth</a>.</li>
   <li><b>Play a sound when a click is dropped</b> makes drops easy to notice.</li>
   <li><b>Log every click</b> writes successful clicks as well as problems. Turn it off for long sessions.</li>
   <li><b>Drop detection window</b> is how long RodentGym waits for a reported click to arrive before calling it dropped. The default is 400 ms.</li>
@@ -77,19 +97,22 @@
 
 <h2>Shortcuts</h2>
 <ul>
-  <li><code>⌘,</code> Settings · <code>⌘?</code> Help · <code>⌘G</code> Cheese Stack · <code>⌘T</code> Gesture Trainer · <code>⌘J</code> Force Sensor · <code>⌘K</code> Reset counters · <code>⌘L</code> Open log</li>
+  <li><code>⌘,</code> Settings · <code>⌘?</code> Help · <code>⌘G</code> Cheese Stack · <code>⌘T</code> Gesture Trainer · <code>⌘J</code> Force Sensor · <code>⌘D</code> Latency Monitor · <code>⌘E</code> Hardware Self-Test · <code>⌘K</code> Reset counters · <code>⌘L</code> Open log</li>
   <li><code>⇧⌘M</code> Mouse settings · <code>⇧⌘T</code> Trackpad settings · <code>⇧⌘R</code> Rescan devices</li>
 </ul>
 
 <h2>Privacy and permissions</h2>
 <p>RodentGym only listens. It never changes, blocks or creates input, and needs no Accessibility permission. It watches mouse buttons and touches only, never the keyboard, and nothing leaves your Mac. The log is readable only by you.</p>
 <p>Watching mouse click events doesn't normally need any permission. If the <b>macOS delivers</b> lights say "Unavailable", allow RodentGym under <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent">Privacy &amp; Security › Input Monitoring</a> and reopen it.</p>
+<p>Bluetooth permission is only requested if you turn on Bluetooth signal monitoring in Settings. RodentGym then reads the signal strength of devices that are already connected; it never scans for, pairs with or connects to anything.</p>
 
 <h2>Limitations</h2>
 <ul>
   <li>Touch data comes from Apple's private MultitouchSupport framework. A future macOS update could change or break it.</li>
   <li>The trackpad corner area is drawn approximately, because Apple doesn't publish its exact size.</li>
   <li>Colour codes aren't documented by Apple. RodentGym's table matches Apple's Continuity colour codes and has been checked against real devices, but a rare model could be decoded wrongly. Use Settings to override it.</li>
+  <li>Click latency is measured from when the Mac receives the button report, so time spent in the air over Bluetooth isn't included. Clicks with no button report (some trackpad clicks) have no latency figure.</li>
+  <li>Rebuilding RodentGym from source gives it a new signature, so macOS may ask for Bluetooth permission again.</li>
   <li>Devices are detected when connected and disconnected. If one doesn't appear, choose <b>Devices › Rescan Devices</b>.</li>
 </ul>
 </body></html>

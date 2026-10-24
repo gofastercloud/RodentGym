@@ -34,4 +34,12 @@ void RGDrawLight(NSRect rect, NSString *label, BOOL on, NSColor *onColour);
 /// YES when the user has asked the system to reduce motion.
 BOOL RGReduceMotion(void);
 
+/// Device surface outlines and renders, as drawn in the main window. `kind` is 0 for a Magic Mouse,
+/// 1 for a Magic Trackpad and 2 for a built-in trackpad. (Implemented in RodentGym.m.)
+NSBezierPath *RGSurfacePath(int kind, NSRect rect);
+void RGDrawSurface(int kind, NSRect rect, BOOL darkTop);
+
+/// Draws a small status pill: a coloured dot and a label, e.g. "Pass".
+void RGDrawPill(NSRect rect, NSString *label, NSColor *colour);
+
 NS_ASSUME_NONNULL_END

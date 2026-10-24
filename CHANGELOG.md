@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — 2026-10-25
+
+- **Latency Monitor** (Devices › Latency Monitor, ⌘D): click latency (kernel HID report to delivered click), touch report rate with jitter and stalls, and Bluetooth signal on one two-minute timeline, with memory pressure shaded behind and dropped clicks, connects and disconnects marked across all three. It records from launch. Tiles summarise median and 95th-percentile latency, drops, report rate, signal and memory, and a Liquid Glass readout shows the latest click.
+- **Bluetooth signal, opt-in** (Settings › Bluetooth): RSSI for connected Bluetooth devices every 2 seconds, on each device card and in the Latency Monitor. Bluetooth permission is requested only when you turn it on; if it's refused, Settings links to Privacy & Security. Poor signal is logged.
+- **Hardware Self-Test** (Devices › Hardware Self-Test, ⌘E): Surface Coverage (dead zones and lost strokes), Phantom Touch (contacts while idle) and Haptics (three patterns through a Force Touch trackpad's haptic engine), with results per device and **Copy Report** for support cases.
+- Click log lines now include latency, and device connects and disconnects are logged.
+
 ## 0.3.0 — 2026-10-25
 
 - **Live visualisation on the device drawings:** a glowing, tapered trail follows each finger and fades over about half a second (blue, or orange in a secondary-click area). Every click sends out an eased double ripple: blue for left, orange for right. A dropped click gets a red ripple with a ✕ where it happened. Redrawing now runs on a display link at the screen's refresh rate (up to 120 Hz), and only while something is moving. With Reduce Motion on, ripples become simple fades.
