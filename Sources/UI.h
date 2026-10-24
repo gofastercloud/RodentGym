@@ -42,4 +42,9 @@ void RGDrawSurface(int kind, NSRect rect, BOOL darkTop);
 /// Draws a small status pill: a coloured dot and a label, e.g. "Pass".
 void RGDrawPill(NSRect rect, NSString *label, NSColor *colour);
 
+/// Renders a whole window, title bar and toolbar included, as a PNG with rounded corners and a soft
+/// shadow on a transparent background, the way macOS's own window screenshots look. Used to make
+/// the README and website images from demo data.
+BOOL RGWriteWindowPNG(NSWindow *window, NSString *path);
+
 NS_ASSUME_NONNULL_END

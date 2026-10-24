@@ -7,14 +7,12 @@
 
 #define SPAN        120.0   // seconds of history on screen
 #define MAX_CLICKS  1024
-#define MAX_MEM     256
 #define SERIES_LEN  1024    // 4 Hz rate samples or 0.5 Hz signal samples, comfortably more than SPAN
 #define MAX_STALLS  128
 #define STAT_CLICKS 200     // latency statistics cover the most recent clicks
 
 typedef struct { double t; float ms; unsigned char button; BOOL dropped; } RGClick;
 typedef struct { double t; float v, jitter; } RGPoint;
-typedef struct { double t; unsigned char level, free; } RGMem;
 
 #pragma mark - A time series for one device
 
@@ -61,7 +59,6 @@ static NSColor *colourForKind(NSDictionary *d) {
 static NSColor *clickColour(int b) {
     return b == 2 ? NSColor.systemOrangeColor : b == 3 ? NSColor.systemPurpleColor : NSColor.systemBlueColor;
 }
-static NSString *pressureName(int level) { return level >= 4 ? @"Critical" : level >= 2 ? @"Warning" : @"Normal"; }
 
 // The smallest "nice" axis maximum that leaves headroom above `v`.
 static double niceMax(double v, const double *steps, int n) {
@@ -77,8 +74,6 @@ static double niceMax(double v, const double *steps, int n) {
     int clickHead, clickCount;
     long totalClicks, totalDrops;
     double lastDropTime;
-    RGMem mem[MAX_MEM];
-    int memHead, memCount, memLevel, memFree;
     double frozen, pausedAt;
     BOOL paused;
 }
@@ -130,24 +125,6 @@ static double niceMax(double v, const double *steps, int n) {
     NSArray<NSValue *> *lanes = @[[NSValue valueWithRect:lat], [NSValue valueWithRect:rate], [NSValue valueWithRect:sig]];
     CGFloat (^xFor)(double) = ^CGFloat(double t) { return x1 - (now - t) / SPAN * (x1 - x0); };
     double since = now - SPAN;
-
-    // Memory pressure, shaded behind every lane in runs of the same level
-    int runLevel = 0;
-    double runStart = 0, runEnd = 0;
-    for (int i = 0; i <= m->memCount; i++) {
-        RGMem s = i < m->memCount ? m->mem[(m->memHead - m->memCount + i + MAX_MEM) % MAX_MEM] : (RGMem){now + 10, 0, 0};
-        int level = s.level >= 4 ? 4 : s.level >= 2 ? 2 : 0;
-        if (level == runLevel && s.t - runEnd < 2.5) { runEnd = s.t; continue; }
-        if (runLevel && runEnd >= since) {
-            NSColor *c = runLevel >= 4 ? [NSColor.systemRedColor colorWithAlphaComponent:0.13] : [NSColor.systemOrangeColor colorWithAlphaComponent:0.10];
-            [c setFill];
-            CGFloat a = MAX(x0, xFor(runStart - 1)), b = MIN(x1, xFor(runEnd));
-            for (NSValue *v in lanes)
-                NSRectFillUsingOperation(NSMakeRect(a, v.rectValue.origin.y, b - a, v.rectValue.size.height), NSCompositingOperationSourceOver);
-        }
-        runLevel = level;
-        runStart = runEnd = s.t;
-    }
 
     // Scrolling 10-second grid
     [[NSColor.separatorColor colorWithAlphaComponent:0.18] setStroke];
@@ -353,7 +330,6 @@ static double niceMax(double v, const double *steps, int n) {
     for (NSDictionary<NSString *, RGSeries *> *group in @[m.rates, m.signals])
         for (RGSeries *s in [group.allValues sortedArrayUsingComparator:^NSComparisonResult(RGSeries *a, RGSeries *b) { return [a.name compare:b.name]; }])
             if (s.name && ![named containsObject:s.name]) { [named addObject:s.name]; [legend addObject:@[s.colour, s.name, @2]]; }
-    [legend addObject:@[NSColor.systemOrangeColor, @"Memory pressure", @3]];
     CGFloat lx = card.origin.x + 16, ly = NSMaxY(card) - 26;
     NSFont *lf = [NSFont systemFontOfSize:10.5];
     for (NSArray *item in legend) {
@@ -361,11 +337,7 @@ static double niceMax(double v, const double *steps, int n) {
         int style = [item[2] intValue];
         if (style == 0) { [c setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(lx, ly + 3, 8, 8)] fill]; }
         else if (style == 1) RGDrawText(@"✕", NSMakeRect(lx - 1, ly - 1, 12, 14), [NSFont systemFontOfSize:10 weight:NSFontWeightBold], c, NSTextAlignmentLeft);
-        else if (style == 2) { [c setFill]; [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(lx, ly + 5, 12, 4) xRadius:2 yRadius:2] fill]; }
-        else {
-            [[c colorWithAlphaComponent:0.3] setFill];
-            [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(lx, ly + 1, 10, 12) xRadius:2 yRadius:2] fill];
-        }
+        else { [c setFill]; [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(lx, ly + 5, 12, 4) xRadius:2 yRadius:2] fill]; }
         CGFloat w = [item[1] sizeWithAttributes:@{NSFontAttributeName: lf}].width;
         RGDrawText(item[1], NSMakeRect(lx + 16, ly, w + 4, 14), lf, NSColor.secondaryLabelColor, NSTextAlignmentLeft);
         lx += 16 + w + 16;
@@ -409,21 +381,11 @@ static double niceMax(double v, const double *steps, int n) {
     } else if (!btOff) {
         sigV = @"–";
     }
-    int busy = 0;
-    for (int i = 0; i < m->memCount; i++) {
-        RGMem s = m->mem[(m->memHead - m->memCount + i + MAX_MEM) % MAX_MEM];
-        if (s.t >= now - SPAN && s.level >= 2) busy++;
-    }
-    NSString *memS = m->memCount ? [NSString stringWithFormat:@"%d%% free%@", m->memFree,
-                                    busy ? [NSString stringWithFormat:@" · under pressure %d s of the last 2 min", busy] : @""] : @"";
-    NSColor *memC = m->memLevel >= 4 ? NSColor.systemRedColor : m->memLevel >= 2 ? NSColor.systemOrangeColor : NSColor.labelColor;
-
     NSArray *tiles = @[@[@"CLICK LATENCY", latV, latS, NSColor.labelColor],
                        @[@"DROPPED CLICKS", dropV, dropS, m->totalDrops ? NSColor.systemRedColor : NSColor.labelColor],
                        @[@"TOUCH REPORT RATE", rateV, rateS, NSColor.labelColor],
-                       @[@"BLUETOOTH SIGNAL", sigV, sigS, sigC],
-                       @[@"MEMORY PRESSURE", m->memCount ? pressureName(m->memLevel) : @"–", memS, memC]];
-    CGFloat w = (r.size.width - 4 * 12) / 5;
+                       @[@"BLUETOOTH SIGNAL", sigV, sigS, sigC]];
+    CGFloat w = (r.size.width - 3 * 12) / 4;
     for (NSUInteger i = 0; i < tiles.count; i++) {
         NSRect t = NSMakeRect(r.origin.x + i * (w + 12), r.origin.y, w, r.size.height);
         RGDrawCard(t, 16);
@@ -457,7 +419,6 @@ static NSString *const kSettingsItem = @"settings", *const kPauseItem = @"pause"
         _rates = [NSMutableDictionary dictionary];
         _signals = [NSMutableDictionary dictionary];
         _links = [NSMutableArray array];
-        memLevel = 1;
     }
     return self;
 }
@@ -553,14 +514,6 @@ static NSString *const kSettingsItem = @"settings", *const kPauseItem = @"pause"
     self.badgeLabel.textColor = NSColor.systemRedColor;
 }
 
-- (void)recordMemoryPressure:(int)level free:(int)freePercent {
-    memLevel = level;
-    memFree = freePercent;
-    mem[memHead] = (RGMem){CFAbsoluteTimeGetCurrent(), (unsigned char)level, (unsigned char)MAX(0, MIN(100, freePercent))};
-    memHead = (memHead + 1) % MAX_MEM;
-    if (memCount < MAX_MEM) memCount++;
-}
-
 - (void)recordSignal:(int)rssi device:(NSString *)key name:(NSString *)name {
     NSColor *c = self.rates[key].colour;
     [[self series:self.signals key:key name:name colour:c] add:CFAbsoluteTimeGetCurrent() value:rssi jitter:0];
@@ -596,7 +549,6 @@ static NSString *const kSettingsItem = @"settings", *const kPauseItem = @"pause"
         anySignal = YES;
     }
     if (!anySignal) [out addObject:[NSString stringWithFormat:@"Bluetooth signal: %@", btOff ?: @"no readings."]];
-    if (memCount) [out addObject:[NSString stringWithFormat:@"Memory pressure: %@ (%d%% free).", pressureName(memLevel).lowercaseString, memFree]];
     return [out componentsJoinedByString:@"\n"];
 }
 
@@ -692,7 +644,6 @@ static NSString *const kSettingsItem = @"settings", *const kPauseItem = @"pause"
     for (RGSeries *s in self.rates.allValues) { s->count = s->head = s->stallCount = s->stallHead = 0; s->totalStalls = s->lost = 0; }
     [self.signals removeAllObjects];
     [self.links removeAllObjects];
-    memCount = memHead = 0;
     self.badgeLabel.stringValue = @"Waiting for a click";
     self.badgeLabel.textColor = NSColor.secondaryLabelColor;
     self.view.needsDisplay = YES;
@@ -724,16 +675,7 @@ static NSString *const kSettingsItem = @"settings", *const kPauseItem = @"pause"
     NSDictionary *mouse = @{@"kind": @"mouse", @"name": @"Magic Mouse"}, *pad = @{@"kind": @"trackpad", @"name": @"Magic Trackpad"};
     RGSeries *mr = [self series:self.rates key:@"mouse" name:@"Magic Mouse" colour:colourForKind(mouse)];
     RGSeries *tr = [self series:self.rates key:@"pad" name:@"Magic Trackpad" colour:colourForKind(pad)];
-    // Memory pressure: a warning from -75 s to -48 s while something big loads
-    for (int s = 0; s <= (int)SPAN; s++) {
-        double t = t0 + s;
-        int level = (t > frozen - 75 && t < frozen - 48) ? 2 : 1;
-        mem[memHead] = (RGMem){t, (unsigned char)level, (unsigned char)(level == 2 ? 9 : 52)};
-        memHead = (memHead + 1) % MAX_MEM;
-        memCount++;
-    }
-    memLevel = 1; memFree = 52;
-    // Clicks: a few milliseconds normally, slower and less even under memory pressure, one dropped
+    // Clicks: a few milliseconds normally; slower and less even while the Mac is busy, with one dropped
     for (double t = t0 + 2; t < frozen - 1; t += 1.3 + drand48() * 1.6) {
         BOOL busy = t > frozen - 75 && t < frozen - 48;
         double ms = busy ? 14 + drand48() * 38 : 3.2 + drand48() * 3.5 + (drand48() < 0.06 ? 6 : 0);
@@ -747,7 +689,7 @@ static NSString *const kSettingsItem = @"settings", *const kPauseItem = @"pause"
         }
         totalClicks++;
     }
-    // Touch report rate in bursts of use: steady at 90 Hz, ragged with stalls under pressure
+    // Touch report rate in bursts of use: steady at 90 Hz, ragged with stalls while the Mac is busy
     for (double t = t0; t < frozen; t += 0.25) {
         double phase = fmod(t - t0, 30);
         BOOL busy = t > frozen - 75 && t < frozen - 48;

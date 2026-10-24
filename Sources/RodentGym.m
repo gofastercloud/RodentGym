@@ -29,6 +29,7 @@
 #import "LatencyMonitor.h"
 #import "SelfTest.h"
 #import "Bluetooth.h"
+#import "Help.h"
 #include <mach/mach_time.h>
 
 #define APP_NAME    @"RodentGym"
@@ -331,6 +332,8 @@ static double animNow(void) { return gFrozenTime > 0 ? gFrozenTime : CFAbsoluteT
     int lowWarn;
     int rssi;            // dBm, 0 when not monitored or not reported
     double rssiTime;
+    NSRect surfaceRect;  // where the device was last drawn, for dragging the mouse's split line
+    float dragDivision;  // 0 unless the split line is being dragged
 }
 @property (copy) NSString *name, *model, *firmware, *identifier, *transport;
 @property (copy) NSString *productName;   // as the hardware names itself; used to match HID reports
@@ -353,7 +356,9 @@ static double animNow(void) { return gFrozenTime > 0 ? gFrozenTime : CFAbsoluteT
     return intOf(self.prefs[@"TrackpadRightClick"], 1) ? 1 : 0;
 }
 
-- (float)division { return intOf(self.prefs[@"MouseButtonDivision"], 55) / 100.0f; }
+// Where the secondary-click area starts, 0–1 across the mouse (Apple's default is 55%). While the
+// split line is being dragged, the drag position wins.
+- (float)division { return dragDivision > 0 ? dragDivision : intOf(self.prefs[@"MouseButtonDivision"], 55) / 100.0f; }
 
 - (NSString *)secondaryDescription {
     int z = self.secondaryZone;
@@ -609,7 +614,8 @@ static BOOL writeIconPNG(NSString *path, int px) {
     int statusTicks;
     BOOL lidIsClosed;
 }
-@property (strong) NSWindow *window, *settingsWindow, *helpWindow;
+@property (strong) NSWindow *window, *settingsWindow;
+@property (strong) RGHelp *help;
 @property (strong) RGView *view;
 @property (strong) NSView *toast;
 @property (strong) NSTextField *toastLabel;
@@ -622,13 +628,17 @@ static BOOL writeIconPNG(NSString *path, int px) {
 @property (strong) NSButton *bluetoothCheckbox;
 @property (strong) NSTextField *bluetoothNote;
 @property (strong) NSButton *bluetoothPrivacy;
+@property (strong) NSGridRow *bluetoothPrivacyRow;
+@property (strong) NSSlider *divisionSlider;
+@property (strong) NSTextField *divisionLabel;
+@property (strong) NSButton *divisionReset;
 @property (strong) NSTextField *matchLabel;
 @property (strong) NSArray<RGDevice *> *devices;
 @property (strong) NSMutableDictionary *hidCache;
 @property (strong) NSMutableDictionary<NSString *, NSString *> *lastSecondary;
 @property (strong) NSFileHandle *logFile;
 @property (strong) NSDateFormatter *shortFmt, *longFmt;
-@property (copy) NSString *snapshotPath;
+@property (copy) NSString *snapshotPath, *windowShotsDir;
 @property BOOL demo, live;
 - (NSArray<RGDevice *> *)visibleDevices;
 - (RGStyle)styleFor:(RGDevice *)d;
@@ -639,7 +649,11 @@ static BOOL writeIconPNG(NSString *path, int px) {
 - (void)event:(int)b down:(BOOL)down stamp:(uint64_t)stamp;
 - (void)rescanDevices:(id)sender;
 - (void)refreshBatteryAndColour;
+- (void)setDivision:(int)percent forDevice:(RGDevice *)d;
 @end
+
+#define MIN_DIVISION 35   // limits for the Magic Mouse split, in percent across the mouse
+#define MAX_DIVISION 75
 
 static void hidCallback(void *ctx, IOReturn result, void *sender, IOHIDValueRef value) {
     IOHIDElementRef el = IOHIDValueGetElement(value);
@@ -682,11 +696,65 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 @interface RGView : NSView
 @property (weak) RGController *c;
 @property (strong) CADisplayLink *link;
+@property (strong) RGDevice *dragging;   // a Magic Mouse whose split line is being dragged
 @end
 
 @implementation RGView
 
 - (BOOL)isFlipped { return YES; }
+
+#pragma mark Dragging the Magic Mouse split
+
+- (BOOL)hasDraggableSplit:(RGDevice *)d {
+    return d->kind == RGKindMouse && d.secondaryZone != 0 && !NSIsEmptyRect(d->surfaceRect) && !self.c.demo;
+}
+
+- (CGFloat)splitXFor:(RGDevice *)d {
+    NSRect s = d->surfaceRect;
+    return s.origin.x + s.size.width * (d.secondaryZone == 1 ? d.division : 1 - d.division);
+}
+
+- (void)resetCursorRects {
+    for (RGDevice *d in self.c.visibleDevices)
+        if ([self hasDraggableSplit:d])
+            [self addCursorRect:NSMakeRect([self splitXFor:d] - 7, d->surfaceRect.origin.y, 14, d->surfaceRect.size.height)
+                         cursor:NSCursor.resizeLeftRightCursor];
+}
+
+- (void)mouseDown:(NSEvent *)e {
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    for (RGDevice *d in self.c.visibleDevices) {
+        if (![self hasDraggableSplit:d]) continue;
+        if (fabs(p.x - [self splitXFor:d]) <= 7 && NSMinY(d->surfaceRect) <= p.y && p.y <= NSMaxY(d->surfaceRect)) {
+            self.dragging = d;
+            d->dragDivision = d.division;
+            self.needsDisplay = YES;
+            return;
+        }
+    }
+}
+
+- (void)mouseDragged:(NSEvent *)e {
+    RGDevice *d = self.dragging;
+    if (!d) return;
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    NSRect s = d->surfaceRect;
+    float across = (float)((p.x - s.origin.x) / s.size.width);
+    float div = d.secondaryZone == 1 ? across : 1 - across;
+    d->dragDivision = MAX(MIN_DIVISION, MIN(MAX_DIVISION, lroundf(div * 100))) / 100.0f;
+    self.needsDisplay = YES;
+}
+
+- (void)mouseUp:(NSEvent *)e {
+    RGDevice *d = self.dragging;
+    if (!d) return;
+    self.dragging = nil;
+    int percent = (int)lroundf(d->dragDivision * 100);
+    [self.c setDivision:percent forDevice:d];
+    d->dragDivision = 0;
+    [self.window invalidateCursorRectsForView:self];
+    self.needsDisplay = YES;
+}
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
@@ -749,6 +817,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
                                                               : NSMakeSize(area.size.width, area.size.width / aspect);
     NSRect s = NSMakeRect(round(NSMidX(area) - sz.width / 2), round(NSMidY(area) - sz.height / 2), round(sz.width), round(sz.height));
     RGStyle style = [c styleFor:d];
+    if (!NSEqualRects(d->surfaceRect, s)) { d->surfaceRect = s; [self.window invalidateCursorRectsForView:self]; }
     drawSurface(d->kind, s, style);
     [self drawZones:d surface:s dark:style.darkTop];
     [self drawTouches:d surface:s];
@@ -844,6 +913,31 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
             CGFloat ly = s.origin.y + s.size.height * 0.58;
             verticalLabel(@"PRIMARY", NSMakePoint(NSMidX(primary), ly), f, ink);
             verticalLabel(@"SECONDARY", NSMakePoint(NSMidX(zone), ly), f, accent);
+            // A grab handle: the split can be dragged
+            BOOL dragging = d->dragDivision > 0;
+            NSRect handle = NSMakeRect(splitX - 4.5, s.origin.y + s.size.height * 0.30 - 14, 9, 28);
+            [NSGraphicsContext saveGraphicsState];
+            NSShadow *sh = [NSShadow new];
+            sh.shadowColor = [NSColor colorWithWhite:0 alpha:0.3];
+            sh.shadowBlurRadius = 3;
+            sh.shadowOffset = NSMakeSize(0, -1);
+            [sh set];
+            [(dragging ? accent : NSColor.whiteColor) setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:handle xRadius:4.5 yRadius:4.5] fill];
+            [NSGraphicsContext restoreGraphicsState];
+            NSBezierPath *rim = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(handle, 0.5, 0.5) xRadius:4 yRadius:4];
+            rim.lineWidth = 1;
+            [accent setStroke];
+            [rim stroke];
+            if (dragging) {
+                NSString *pct = [NSString stringWithFormat:@"%d%%", (int)lroundf(div * 100)];
+                NSFont *pf = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightBold];
+                CGFloat pw = [pct sizeWithAttributes:@{NSFontAttributeName: pf}].width + 14;
+                NSRect tag = NSMakeRect(splitX - pw / 2, handle.origin.y - 24, pw, 18);
+                [accent setFill];
+                [[NSBezierPath bezierPathWithRoundedRect:tag xRadius:9 yRadius:9] fill];
+                centred(pct, NSInsetRect(tag, 0, 2), pf, NSColor.whiteColor);
+            }
         }
     } else if (z >= 2) {
         // Apple doesn't publish the corner size; a quarter by a bit over a quarter is a close visual guide.
@@ -1074,7 +1168,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 }
 
 - (NSArray<RGDevice *> *)visibleDevices {
-    BOOL showBuiltIn = self.showBuiltIn;
+    BOOL showBuiltIn = self.showBuiltIn && !self.demo;
     NSMutableArray *a = [NSMutableArray array];
     for (RGDevice *d in self.devices) if (d->kind != RGKindBuiltIn || showBuiltIn) [a addObject:d];
     return a;
@@ -1148,6 +1242,10 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         if ([args containsObject:@"--demo-force"]) { self.forceSensor = [RGForceSensor new]; [self.forceSensor showDemo]; }
         if ([args containsObject:@"--demo-latency"]) [self.monitor showDemo];
         if ([args containsObject:@"--demo-selftest"]) { self.selfTest = [RGSelfTest new]; [self.selfTest showDemo]; }
+        if (self.windowShotsDir) {
+            [self prepareWindowShots];
+            [self performSelector:@selector(writeWindowShots) withObject:nil afterDelay:2.0];
+        }
     } else {
         [self setupHID];
         [self setupTap];
@@ -1295,6 +1393,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     } else {
         [self.window center];
         [self.window setFrameAutosaveName:@"RodentGymMain"];
+        if (self.windowShotsDir) { self.window.alphaValue = 0; self.window.ignoresMouseEvents = YES; }
         [self.window makeKeyAndOrderFront:nil];
     }
 }
@@ -1487,6 +1586,75 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     [self activate];
 }
 
+#pragma mark Magic Mouse split
+
+// The split between the primary and secondary click areas is the driver's MouseButtonDivision
+// preference (55% by default). System Settings has no control for it. RodentGym pushes a new
+// value to the driver so it applies straight away, and saves it in the mouse preference domains
+// so it survives reconnects and restarts. This is the only setting RodentGym ever changes, and
+// only when you move the split yourself.
+- (void)setDivision:(int)percent forDevice:(RGDevice *)d {
+    percent = MAX(MIN_DIVISION, MIN(MAX_DIVISION, percent));
+    d->dragDivision = 0;
+    int before = intOf(d.prefs[@"MouseButtonDivision"], 55);
+    if (percent == before) { [self updateDivisionControls]; self.view.needsDisplay = YES; return; }
+    NSNumber *value = @(percent);
+    kern_return_t kr = IORegistryEntrySetCFProperties(d->service, (__bridge CFDictionaryRef)@{@"MouseButtonDivision": value});
+    NSDictionary *now = regProp(d->service, @"MultitouchPreferences", NO);
+    if (intOf(now[@"MouseButtonDivision"], before) != percent) {
+        // Some drivers only take the whole preferences dictionary
+        NSMutableDictionary *all = [([now isKindOfClass:NSDictionary.class] ? now : d.prefs) mutableCopy];
+        all[@"MouseButtonDivision"] = value;
+        kr = IORegistryEntrySetCFProperties(d->service, (__bridge CFDictionaryRef)@{@"MultitouchPreferences": all});
+        now = regProp(d->service, @"MultitouchPreferences", NO);
+    }
+    for (NSString *domain in @[@"com.apple.AppleMultitouchMouse", @"com.apple.driver.AppleBluetoothMultitouch.mouse"]) {
+        CFPreferencesSetAppValue(CFSTR("MouseButtonDivision"), (__bridge CFNumberRef)value, (__bridge CFStringRef)domain);
+        CFPreferencesAppSynchronize((__bridge CFStringRef)domain);
+    }
+    BOOL applied = intOf(now[@"MouseButtonDivision"], before) == percent;
+    if ([now isKindOfClass:NSDictionary.class]) d.prefs = now;
+    [self log:applied
+        ? [NSString stringWithFormat:@"≠ %@: split moved from %d%% to %d%%", d.name, before, percent]
+        : [NSString stringWithFormat:@"✗ %@: couldn't move the split to %d%% (driver said 0x%x). Saved for next time the mouse connects.", d.name, percent, kr]];
+    [self updateDivisionControls];
+    self.view.needsDisplay = YES;
+}
+
+- (RGDevice *)splitMouse {
+    for (RGDevice *d in self.devices) if (d->kind == RGKindMouse) return d;
+    return nil;
+}
+
+- (void)divisionSliderChanged:(NSSlider *)s {
+    RGDevice *d = self.splitMouse;
+    if (!d) return;
+    int percent = (int)lround(s.doubleValue);
+    self.divisionLabel.stringValue = [NSString stringWithFormat:@"%d%%", percent];
+    NSEventType type = NSApp.currentEvent.type;
+    if (type == NSEventTypeLeftMouseDragged || type == NSEventTypeLeftMouseDown) {   // preview while the knob moves
+        d->dragDivision = percent / 100.0f;
+        self.view.needsDisplay = YES;
+    } else {
+        [self setDivision:percent forDevice:d];   // mouse up, keyboard or VoiceOver
+    }
+}
+
+- (void)resetDivision:(id)sender {
+    RGDevice *d = self.splitMouse;
+    if (d) [self setDivision:55 forDevice:d];
+}
+
+- (void)updateDivisionControls {
+    RGDevice *d = self.splitMouse;
+    if (!d || d->dragDivision > 0) return;
+    int percent = intOf(d.prefs[@"MouseButtonDivision"], 55);
+    self.divisionSlider.doubleValue = percent;
+    self.divisionLabel.stringValue = [NSString stringWithFormat:@"%d%%", percent];
+    self.divisionReset.enabled = percent != 55;
+    self.divisionSlider.enabled = d.secondaryZone != 0;
+}
+
 #pragma mark Bluetooth signal (opt-in)
 
 - (void)setupBluetooth {
@@ -1551,7 +1719,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     NSString *base = @"Graphs signal strength in the Latency Monitor and shows it on each device. macOS asks for Bluetooth permission the first time you turn this on.";
     self.bluetoothNote.stringValue = s == RGBluetoothOff ? base : self.bluetooth.statusText;
     self.bluetoothNote.textColor = s == RGBluetoothDenied ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
-    self.bluetoothPrivacy.hidden = s != RGBluetoothDenied;
+    self.bluetoothPrivacyRow.hidden = s != RGBluetoothDenied;
 }
 
 - (void)showForce:(id)sender {
@@ -1580,51 +1748,10 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 }
 
 - (void)showHelp:(id)sender {
-    if (!self.helpWindow) {
-        self.helpWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 660, 760)
-            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
-            backing:NSBackingStoreBuffered defer:NO];
-        self.helpWindow.title = @"RodentGym Help";
-        self.helpWindow.releasedWhenClosed = NO;
-        self.helpWindow.tabbingMode = NSWindowTabbingModeDisallowed;
-        self.helpWindow.contentMinSize = NSMakeSize(420, 300);
-        NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 660, 760)];
-        scroll.hasVerticalScroller = YES;
-        scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-        NSTextView *tv = [[NSTextView alloc] initWithFrame:scroll.bounds];
-        tv.editable = NO;
-        tv.textContainerInset = NSMakeSize(28, 24);
-        tv.autoresizingMask = NSViewWidthSizable;
-        tv.backgroundColor = NSColor.textBackgroundColor;
-        [tv.textStorage setAttributedString:[self helpText]];
-        scroll.documentView = tv;
-        self.helpWindow.contentView = scroll;
-        [self.helpWindow center];
-        [self.helpWindow setFrameAutosaveName:@"RodentGymHelp"];
-    }
-    [self.helpWindow makeKeyAndOrderFront:nil];
+    if (!self.help) self.help = [RGHelp new];
+    [self.help show];
     [self applyWindowLevel];
     [self activate];
-}
-
-// Loads Help.html and recolours it with semantic colours so it reads well in light and dark mode.
-- (NSAttributedString *)helpText {
-    NSURL *url = [NSBundle.mainBundle URLForResource:@"Help" withExtension:@"html"];
-    NSData *html = url ? [NSData dataWithContentsOfURL:url] : nil;
-    NSMutableAttributedString *s = html
-        ? [[NSMutableAttributedString alloc] initWithHTML:html options:@{NSCharacterEncodingDocumentOption: @(NSUTF8StringEncoding)} documentAttributes:nil]
-        : nil;
-    if (!s) return [[NSAttributedString alloc] initWithString:@"Help.html is missing from the app bundle. Rebuild with build.sh."
-                                                   attributes:@{NSForegroundColorAttributeName: NSColor.labelColor}];
-    [s enumerateAttributesInRange:NSMakeRange(0, s.length) options:0 usingBlock:^(NSDictionary *attrs, NSRange range, BOOL *stop) {
-        if (attrs[NSLinkAttributeName]) return;
-        NSColor *c = [attrs[NSForegroundColorAttributeName] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
-        CGFloat r = c ? c.redComponent : 0, g = c ? c.greenComponent : 0, b = c ? c.blueComponent : 0;
-        BOOL greyText = fabs(r - g) < 0.05 && fabs(g - b) < 0.05;
-        if (!c || (greyText && r < 0.25)) [s addAttribute:NSForegroundColorAttributeName value:NSColor.labelColor range:range];
-        else if (greyText) [s addAttribute:NSForegroundColorAttributeName value:NSColor.secondaryLabelColor range:range];
-    }];
-    return s;
 }
 
 #pragma mark Settings window
@@ -1695,14 +1822,35 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     builtIn.accessibilityLabel = @"Built-in trackpad";
     [grid addRowWithViews:@[[self formLabel:@"Built-in trackpad:"], builtIn]];
 
-    NSGridRow *spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
+    NSGridRow *spacer;
+    if (self.splitMouse) {
+        spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
+        spacer.height = 6;
+        self.divisionSlider = [NSSlider sliderWithValue:55 minValue:MIN_DIVISION maxValue:MAX_DIVISION
+                                                 target:self action:@selector(divisionSliderChanged:)];
+        self.divisionSlider.numberOfTickMarks = (MAX_DIVISION - MIN_DIVISION) / 5 + 1;
+        self.divisionSlider.accessibilityLabel = @"Magic Mouse split";
+        [self.divisionSlider.widthAnchor constraintEqualToConstant:200].active = YES;
+        self.divisionLabel = [NSTextField labelWithString:@"55%"];
+        self.divisionLabel.font = [NSFont monospacedDigitSystemFontOfSize:NSFont.systemFontSize weight:NSFontWeightRegular];
+        self.divisionReset = [NSButton buttonWithTitle:@"Reset to 55%" target:self action:@selector(resetDivision:)];
+        self.divisionReset.controlSize = NSControlSizeSmall;
+        [grid addRowWithViews:@[[self formLabel:@"Magic Mouse split:"],
+                                [NSStackView stackViewWithViews:@[self.divisionSlider, self.divisionLabel, self.divisionReset]]]];
+        [grid addRowWithViews:@[[NSGridCell emptyContentView], [self note:
+            @"Where the right-click area starts, across the mouse from the left (from the right when left-handed). "
+            @"Apple's default is 55%, and System Settings has no control for it. You can also drag the split line on the mouse." width:320]]];
+        [self updateDivisionControls];
+    }
+
+    spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
     spacer.height = 6;
     self.bluetoothCheckbox = [NSButton checkboxWithTitle:@"Monitor signal strength" target:self action:@selector(toggleBluetooth:)];
     [grid addRowWithViews:@[[self formLabel:@"Bluetooth:"], self.bluetoothCheckbox]];
     self.bluetoothNote = [self note:@"" width:320];
     [grid addRowWithViews:@[[NSGridCell emptyContentView], self.bluetoothNote]];
     self.bluetoothPrivacy = [NSButton buttonWithTitle:@"Open Privacy & Security…" target:self action:@selector(openBluetoothPrivacy:)];
-    [grid addRowWithViews:@[[NSGridCell emptyContentView], self.bluetoothPrivacy]];
+    self.bluetoothPrivacyRow = [grid addRowWithViews:@[[NSGridCell emptyContentView], self.bluetoothPrivacy]];
     [self updateBluetoothSettingsUI];
 
     spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
@@ -1812,6 +1960,10 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     d.prefs = [prefs isKindOfClass:NSDictionary.class] ? prefs : @{};
     d->kind = builtIn ? RGKindBuiltIn : (d->family == 112 || d.prefs[@"MouseButtonMode"]) ? RGKindMouse : RGKindTrackpad;
     d.model = modelName(d->productID, d->kind);
+    if (self.demo) {   // screenshots never show a real device's name or serial number
+        d.name = d->kind == RGKindMouse ? @"Magic Mouse" : d->kind == RGKindTrackpad ? @"Magic Trackpad" : @"Built-in trackpad";
+        d.identifier = nil;
+    }
 }
 
 - (void)rescanDevices:(id)sender {
@@ -1915,6 +2067,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
             [self log:[NSString stringWithFormat:@"≠ %@: secondary click changed from \"%@\" to \"%@\"", d.name, before, now]];
         self.lastSecondary[d.key] = now;
     }
+    if (self.settingsWindow.visible) [self updateDivisionControls];
 }
 
 - (void)watchDevices {
@@ -2114,7 +2267,6 @@ static NSString *latencyText(double ms) { return ms >= 0 ? [NSString stringWithF
     sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &len, NULL, 0);
     NSString *p = pressure >= 4 ? @"critical" : pressure >= 2 ? @"warning" : @"normal";
     statusLine = [NSString stringWithFormat:@"Memory free %d%% · pressure %@ · swap used %.1f GB", level, p, sw.xsu_used / 1073741824.0];
-    if (self.live) [self.monitor recordMemoryPressure:MAX(1, pressure) free:level];
     if (self.live) {
         NSString *listening = hidOK && tapOK ? @"Listening" : @"Partly listening (see Help)";
         self.window.subtitle = [NSString stringWithFormat:@"%@ · %@", listening, statusLine];
@@ -2187,7 +2339,7 @@ static NSString *latencyText(double ms) { return ms >= 0 ? [NSString stringWithF
     evtDown[2] = YES;
     delivered[1] = 192; delivered[2] = 31;
     hidOK = tapOK = YES;
-    self.window.subtitle = @"Listening · Memory free 58% · pressure normal · swap used 0.0 GB";
+    self.window.subtitle = @"Listening";
     [lines addObjectsFromArray:@[
         [NSString stringWithFormat:@"09:41:02 · RodentGym %@ started: button reports ok, click events ok", APP_VERSION],
         @"09:41:02 · Devices: Magic Mouse (Magic Mouse 2 (Lightning), firmware 3.1.1); Magic Trackpad (Magic Trackpad 2 (Lightning), firmware 8.7.1)",
@@ -2198,6 +2350,58 @@ static NSString *latencyText(double ms) { return ms >= 0 ? [NSString stringWithF
         @"09:42:40 ✗ DROPPED right click: Magic Mouse sent it, macOS delivered nothing | secondary click: Right side (right-handed) | Memory free 21% · pressure warning",
         @"09:42:44 ✓ Right click: Magic Mouse · 31.7 ms"]];
     self.view.needsDisplay = YES;
+}
+
+// Every window, in demo mode, for the README and website. The windows are invisible and ignore the
+// mouse while they're rendered.
+- (NSArray<NSArray *> *)shotWindows {
+    NSMutableArray *a = [NSMutableArray arrayWithObject:@[@"main", self.window]];
+    if (self.monitor.window) [a addObject:@[@"latency-monitor", self.monitor.window]];
+    if (self.selfTest.window) [a addObject:@[@"self-test", self.selfTest.window]];
+    if (self.forceSensor.window) [a addObject:@[@"force-sensor", self.forceSensor.window]];
+    if (self.trainer.window) [a addObject:@[@"gesture-trainer", self.trainer.window]];
+    if (self.game.window) [a addObject:@[@"cheese-stack", self.game.window]];
+    if (self.help.window) [a addObject:@[@"help", self.help.window]];
+    if (self.settingsWindow) [a addObject:@[@"settings", self.settingsWindow]];
+    return a;
+}
+
+- (void)hideForShot:(NSWindow *)w size:(NSSize)size {
+    w.alphaValue = 0;
+    w.ignoresMouseEvents = YES;
+    if (size.width > 0) [w setContentSize:size];
+}
+
+- (void)prepareWindowShots {
+    [self.monitor showDemo];
+    [self hideForShot:self.monitor.window size:NSMakeSize(1040, 720)];
+    self.selfTest = [RGSelfTest new];
+    [self.selfTest showDemo];
+    [self hideForShot:self.selfTest.window size:NSMakeSize(1060, 700)];
+    self.forceSensor = [RGForceSensor new];
+    [self.forceSensor showDemo];
+    [self hideForShot:self.forceSensor.window size:NSMakeSize(900, 620)];
+    self.trainer = [RGGestureTrainer new];
+    [self.trainer showDemo];
+    [self hideForShot:self.trainer.window size:NSZeroSize];
+    [self showGame:nil];
+    [self.game showDemo];
+    [self hideForShot:self.game.window size:NSZeroSize];
+    self.help = [RGHelp new];
+    [self.help showTopic:@"Latency Monitor"];
+    [self hideForShot:self.help.window size:NSMakeSize(940, 640)];
+    [self showSettings:nil];
+    [self hideForShot:self.settingsWindow size:NSZeroSize];
+}
+
+- (void)writeWindowShots {
+    BOOL dark = [NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]] == NSAppearanceNameDarkAqua;
+    [NSFileManager.defaultManager createDirectoryAtPath:self.windowShotsDir withIntermediateDirectories:YES attributes:nil error:nil];
+    for (NSArray *shot in self.shotWindows) {
+        NSString *file = [NSString stringWithFormat:@"%@-%@.png", shot[0], dark ? @"dark" : @"light"];
+        if (!RGWriteWindowPNG(shot[1], [self.windowShotsDir stringByAppendingPathComponent:file])) NSLog(@"Couldn't render %@", file);
+    }
+    [NSApp terminate:nil];
 }
 
 - (void)writeSnapshot {
@@ -2240,6 +2444,12 @@ int main(int argc, const char *argv[]) {
             [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         }
         controller.demo = [args containsObject:@"--demo"];
+        i = [args indexOfObject:@"--window-shots"];   // render every window with demo data, then quit
+        if (i != NSNotFound && i + 1 < args.count) {
+            controller.windowShotsDir = args[i + 1];
+            controller.demo = YES;
+            [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        }
         app.delegate = controller;
         [app run];
     }

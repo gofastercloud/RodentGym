@@ -2,7 +2,7 @@
 # Builds RodentGym.app into ./build and installs it to ~/Applications.
 #   ./build.sh               build and install
 #   ./build.sh --no-install  build only
-#   ./build.sh --screenshot  build, then regenerate the docs/ images (anonymised demo data)
+#   ./build.sh --screenshot  build, then regenerate docs/images (anonymised demo data)
 set -euo pipefail
 cd "${0:A:h}"
 
@@ -26,20 +26,18 @@ done
 iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 
 cp Resources/Info.plist "$APP/Contents/Info.plist"
-cp Resources/Help.html "$APP/Contents/Resources/Help.html"
+cp Resources/Help.md "$APP/Contents/Resources/Help.md"
 codesign --force --options runtime --sign - "$APP"
 echo "Built $APP"
 
 case "${1:-}" in
   --no-install) ;;
   --screenshot)
-    "$APP/Contents/MacOS/RodentGym" --snapshot "$PWD/docs/screenshot.png" --demo --appearance dark
-    "$APP/Contents/MacOS/RodentGym" --snapshot-trainer "$PWD/docs/gesture-trainer.png" --appearance dark
-    "$APP/Contents/MacOS/RodentGym" --snapshot-game "$PWD/docs/cheese-stack.png" --appearance light
-    "$APP/Contents/MacOS/RodentGym" --snapshot-force "$PWD/docs/force-sensor.png" --appearance light
-    "$APP/Contents/MacOS/RodentGym" --snapshot-latency "$PWD/docs/latency-monitor.png" --appearance dark
-    "$APP/Contents/MacOS/RodentGym" --snapshot-selftest "$PWD/docs/self-test.png" --appearance light
-    echo "Wrote docs/*.png" ;;
+    # Every window with anonymised demo data, light and dark, framed like a macOS window screenshot
+    "$APP/Contents/MacOS/RodentGym" --window-shots "$PWD/docs/images" --appearance light
+    "$APP/Contents/MacOS/RodentGym" --window-shots "$PWD/docs/images" --appearance dark
+    "$APP/Contents/MacOS/RodentGym" --render-icon "$PWD/docs/images/icon.png"
+    echo "Wrote docs/images/*.png" ;;
   *)
     pkill -x RodentGym 2>/dev/null || true
     rm -rf "$HOME/Applications/RodentGym.app"

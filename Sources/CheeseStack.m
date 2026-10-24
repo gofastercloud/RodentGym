@@ -183,6 +183,7 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
     leftClicks = 41; rightClicks = 37; scrollDrops = 52; slams = 9;
     frozen = YES;
     flashRight = CFAbsoluteTimeGetCurrent() + 3600;
+    self.overlay.hidden = YES;   // mid-game: no "click to start" card
     self.view.needsDisplay = YES;
 }
 

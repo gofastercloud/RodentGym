@@ -1,5 +1,5 @@
 // Latency Monitor — click latency, touch report rate and Bluetooth signal on one time axis, with
-// memory pressure, dropped clicks and connects/disconnects marked across all of them.
+// dropped clicks and connects/disconnects marked across all of them.
 //
 // Click latency is the time from the Mac receiving a device's button report (the kernel's HID
 // timestamp) to the click event reaching the login session, where RodentGym watches it. Report
@@ -31,8 +31,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)recordClick:(int)button latency:(double)ms device:(nullable NSString *)name;
 - (void)recordDrop:(int)button device:(nullable NSString *)name;
-/// `level` is the kernel's memory pressure level: 1 normal, 2 warning, 4 critical.
-- (void)recordMemoryPressure:(int)level free:(int)freePercent;
 - (void)recordSignal:(int)rssi device:(NSString *)key name:(NSString *)name;
 - (void)recordLink:(BOOL)connected device:(NSString *)name;
 
