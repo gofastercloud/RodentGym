@@ -22,9 +22,10 @@
 #import "UI.h"
 #import "CheeseStack.h"
 #import "GestureTrainer.h"
+#import "ForceSensor.h"
 
 #define APP_NAME    @"RodentGym"
-#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.1.0")
+#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.2.0")
 #define LOG_PATH    [@"~/Library/Logs/RodentGym.log" stringByExpandingTildeInPath]
 
 #pragma mark - MultitouchSupport (private framework)
@@ -74,7 +75,7 @@ int RGCopyTouches(int slot, MTFinger *out) {
 #pragma mark - Settings keys and helpers
 
 static NSString *const kKeepOnTop = @"KeepOnTop";
-static NSString *const kShowBuiltIn = @"ShowBuiltInTrackpad";
+static NSString *const kBuiltInMode = @"BuiltInTrackpadMode";   // 0 automatic (lid open), 1 always, 2 never
 static NSString *const kDropSound = @"PlaySoundOnDrop";
 static NSString *const kLogAll = @"LogEveryClick";
 static NSString *const kMatchMs = @"MatchWindowMs";
@@ -107,6 +108,28 @@ static NSString *firmwareString(int v) {
     NSMutableArray *parts = [NSMutableArray array];
     for (NSUInteger i = 0; i < hex.length; i++) [parts addObject:[hex substringWithRange:NSMakeRange(i, 1)]];
     return [parts componentsJoinedByString:@"."];
+}
+
+// The Mac's marketing name from the device tree, e.g. "MacBook Pro (14-inch, M5)".
+static NSString *macProductName(void) {
+    io_registry_entry_t product = IORegistryEntryFromPath(kIOMainPortDefault, "IODeviceTree:/product");
+    NSData *data = product ? CFBridgingRelease(IORegistryEntryCreateCFProperty(product, CFSTR("product-name"), kCFAllocatorDefault, 0)) : nil;
+    if (product) IOObjectRelease(product);
+    if ([data isKindOfClass:NSData.class] && data.length) {
+        NSString *s = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        s = [s stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\0"]];
+        if (s.length) return s;
+    }
+    return @"this Mac";
+}
+
+// YES when a MacBook's lid is closed (clamshell mode with an external display).
+static BOOL lidClosed(void) {
+    io_service_t root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"));
+    if (!root) return NO;
+    id state = CFBridgingRelease(IORegistryEntryCreateCFProperty(root, CFSTR("AppleClamshellState"), kCFAllocatorDefault, 0));
+    IOObjectRelease(root);
+    return [state respondsToSelector:@selector(boolValue)] && [state boolValue];
 }
 
 // Finds every registry entry carrying `key` (e.g. BatteryPercent, ColorID), indexed by the owning
@@ -170,7 +193,7 @@ static NSColor *blend(NSColor *c, NSColor *with, CGFloat amount) {
 }
 
 static NSString *modelName(int productID, RGKind kind) {
-    if (kind == RGKindBuiltIn) return @"Built-in trackpad";
+    if (kind == RGKindBuiltIn) return [macProductName() stringByAppendingString:@" · Force Touch"];
     switch (productID) {
         case 0x030d: return @"Magic Mouse (1st generation)";
         case 0x030e: return @"Magic Trackpad (1st generation)";
@@ -191,6 +214,7 @@ static NSString *modelName(int productID, RGKind kind) {
     long sent[4], dropped[4], remapped;
 }
 @property (copy) NSString *name, *model, *firmware, *identifier, *transport;
+@property (copy) NSString *productName;   // as the hardware names itself; used to match HID reports
 @property (copy) NSDictionary *prefs;   // MultitouchPreferences the driver is applying
 @end
 
@@ -398,6 +422,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
     IONotificationPortRef notifyPort;
     io_iterator_t addIter, removeIter;
     int statusTicks;
+    BOOL lidIsClosed;
 }
 @property (strong) NSWindow *window, *settingsWindow, *helpWindow;
 @property (strong) RGView *view;
@@ -405,6 +430,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
 @property (strong) NSTextField *toastLabel;
 @property (strong) RGCheeseStack *game;
 @property (strong) RGGestureTrainer *trainer;
+@property (strong) RGForceSensor *forceSensor;
 @property (strong) NSTextField *matchLabel;
 @property (strong) NSArray<RGDevice *> *devices;
 @property (strong) NSMutableDictionary *hidCache;
@@ -509,6 +535,15 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     drawSurface(d->kind, s, style);
     [self drawZones:d surface:s dark:style.darkTop];
     [self drawTouches:d surface:s];
+    if (d->kind == RGKindBuiltIn && c->lidIsClosed) {
+        NSBezierPath *veil = surfacePath(d->kind, s);
+        [[NSColor.windowBackgroundColor colorWithAlphaComponent:0.72] setFill];
+        [veil fill];
+        RGDrawText(@"Lid closed", NSMakeRect(s.origin.x, NSMidY(s) - 18, s.size.width, 20),
+                   [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], NSColor.labelColor, NSTextAlignmentCenter);
+        RGDrawText(@"Open the lid to use this trackpad", NSMakeRect(s.origin.x, NSMidY(s) + 4, s.size.width, 16),
+                   [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor, NSTextAlignmentCenter);
+    }
 
     // What the hardware reports
     CGFloat ly = y + 266, lw = (iw - 56 - 8) / 2;
@@ -678,19 +713,24 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 #pragma mark - Controller
 
 static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"trackpadSettings", *const kTBGame = @"cheeseStack",
-                *const kTBTrainer = @"gestureTrainer", *const kTBReset = @"resetCounters";
+                *const kTBTrainer = @"gestureTrainer", *const kTBForce = @"forceSensor", *const kTBReset = @"resetCounters";
 
 @implementation RGController
 
 + (void)initialize {
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
-        kKeepOnTop: @NO, kShowBuiltIn: @NO, kDropSound: @YES, kLogAll: @YES, kMatchMs: @400, kFinishes: @{}}];
+        kKeepOnTop: @NO, kBuiltInMode: @0, kDropSound: @YES, kLogAll: @YES, kMatchMs: @400, kFinishes: @{}}];
 }
 
 - (double)matchWindow { return MAX(100, [NSUserDefaults.standardUserDefaults integerForKey:kMatchMs]) / 1000.0; }
 
+- (BOOL)showBuiltIn {
+    NSInteger mode = [NSUserDefaults.standardUserDefaults integerForKey:kBuiltInMode];
+    return mode == 1 || (mode == 0 && !lidIsClosed);
+}
+
 - (NSArray<RGDevice *> *)visibleDevices {
-    BOOL showBuiltIn = [NSUserDefaults.standardUserDefaults boolForKey:kShowBuiltIn];
+    BOOL showBuiltIn = self.showBuiltIn;
     NSMutableArray *a = [NSMutableArray array];
     for (RGDevice *d in self.devices) if (d->kind != RGKindBuiltIn || showBuiltIn) [a addObject:d];
     return a;
@@ -732,6 +772,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     lines = [NSMutableArray array];
     self.live = !self.snapshotPath && !self.demo;
+    lidIsClosed = lidClosed();
     self.hidCache = [NSMutableDictionary dictionary];
     self.lastSecondary = [NSMutableDictionary dictionary];
     self.shortFmt = [NSDateFormatter new];
@@ -754,6 +795,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         NSArray *args = NSProcessInfo.processInfo.arguments;
         if ([args containsObject:@"--demo-trainer"]) { self.trainer = [RGGestureTrainer new]; [self.trainer showDemo]; }
         if ([args containsObject:@"--demo-game"]) { [self showGame:nil]; [self.game showDemo]; }
+        if ([args containsObject:@"--demo-force"]) { self.forceSensor = [RGForceSensor new]; [self.forceSensor showDemo]; }
     } else {
         [self setupHID];
         [self setupTap];
@@ -764,6 +806,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         NSArray *args = NSProcessInfo.processInfo.arguments;   // open the Gym straight away, e.g. from a shortcut
         if ([args containsObject:@"--show-trainer"]) [self showTrainer:nil];
         if ([args containsObject:@"--show-game"]) [self showGame:self];
+        if ([args containsObject:@"--show-force"]) [self showForce:nil];
     }
     NSTimer *draw = [NSTimer timerWithTimeInterval:1.0 / 30 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     NSTimer *status = [NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(updateStatus) userInfo:nil repeats:YES];
@@ -853,6 +896,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     NSMenu *gym = [self addMenu:@"Gym" to:bar];
     [self add:gym title:@"Cheese Stack" action:@selector(showGame:) key:@"g" modifiers:0 symbol:@"gamecontroller"];
     [self add:gym title:@"Gesture Trainer" action:@selector(showTrainer:) key:@"t" modifiers:0 symbol:@"hand.draw"];
+    [self add:gym title:@"Force Sensor" action:@selector(showForce:) key:@"j" modifiers:0 symbol:@"gauge.with.dots.needle.67percent"];
 
     NSMenu *win = [self addMenu:@"Window" to:bar];
     [self add:win title:@"Minimise" action:@selector(performMiniaturize:) key:@"m" modifiers:0 symbol:nil];
@@ -897,7 +941,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 }
 
 - (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar {
-    return @[kTBMouse, kTBTrackpad, NSToolbarFlexibleSpaceItemIdentifier, kTBGame, kTBTrainer, NSToolbarSpaceItemIdentifier, kTBReset];
+    return @[kTBMouse, kTBTrackpad, NSToolbarFlexibleSpaceItemIdentifier, kTBGame, kTBTrainer, kTBForce, NSToolbarSpaceItemIdentifier, kTBReset];
 }
 - (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar {
     return [[self toolbarDefaultItemIdentifiers:toolbar] arrayByAddingObject:NSToolbarSpaceItemIdentifier];
@@ -909,6 +953,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         kTBTrackpad: @[@"Trackpad Settings", @"rectangle.and.hand.point.up.left", @"Open Trackpad settings", @"openTrackpadSettings:"],
         kTBGame:     @[@"Cheese Stack", @"gamecontroller", @"Play Cheese Stack, a click workout", @"showGame:"],
         kTBTrainer:  @[@"Gesture Trainer", @"hand.draw", @"Practise every gesture you have switched on", @"showTrainer:"],
+        kTBForce:    @[@"Force Sensor", @"gauge.with.dots.needle.67percent", @"Graph click pressure from a Force Touch trackpad", @"showForce:"],
         kTBReset:    @[@"Reset Counters", @"arrow.counterclockwise", @"Reset the click counters", @"resetCounters:"]}[ident];
     if (!spec) return nil;
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:ident];
@@ -1037,16 +1082,30 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     if (!self.trainer) {
         self.trainer = [RGGestureTrainer new];
         __weak RGController *weakSelf = self;
-        self.trainer.devices = ^NSArray<NSDictionary *> * {
-            NSMutableArray *a = [NSMutableArray array];
-            for (RGDevice *d in weakSelf.visibleDevices)
-                [a addObject:@{@"name": d.name, @"kind": d->kind == RGKindMouse ? @"mouse" : @"trackpad",
-                               @"slot": @(d->slot), @"prefs": d.prefs ?: @{}}];
-            return a;
-        };
+        self.trainer.devices = ^NSArray<NSDictionary *> * { return weakSelf.deviceInfos; };
         self.trainer.log = ^(NSString *line) { [weakSelf log:line]; };
     }
     [self.trainer show];
+    [self applyWindowLevel];
+    [self activate];
+}
+
+// Devices as plain dictionaries for the Gym windows.
+- (NSArray<NSDictionary *> *)deviceInfos {
+    NSMutableArray *a = [NSMutableArray array];
+    for (RGDevice *d in self.visibleDevices)
+        [a addObject:@{@"name": d.name, @"kind": d->kind == RGKindMouse ? @"mouse" : @"trackpad",
+                       @"slot": @(d->slot), @"prefs": d.prefs ?: @{}}];
+    return a;
+}
+
+- (void)showForce:(id)sender {
+    if (!self.forceSensor) {
+        self.forceSensor = [RGForceSensor new];
+        __weak RGController *weakSelf = self;
+        self.forceSensor.devices = ^NSArray<NSDictionary *> * { return weakSelf.deviceInfos; };
+    }
+    [self.forceSensor show];
     [self applyWindowLevel];
     [self activate];
 }
@@ -1134,7 +1193,11 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 - (void)toggleSetting:(NSButton *)b {
     [NSUserDefaults.standardUserDefaults setBool:b.state == NSControlStateValueOn forKey:b.identifier];
     if ([b.identifier isEqualToString:kKeepOnTop]) [self applyWindowLevel];
-    if ([b.identifier isEqualToString:kShowBuiltIn]) [self relayout];
+}
+
+- (void)builtInModeChanged:(NSPopUpButton *)p {
+    [NSUserDefaults.standardUserDefaults setInteger:p.indexOfSelectedItem forKey:kBuiltInMode];
+    [self relayout];
 }
 
 - (void)updateMatchLabel {
@@ -1169,7 +1232,13 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     grid.rowSpacing = 8;
     grid.columnSpacing = 10;
     [grid addRowWithViews:@[[self formLabel:@"Window:"], [self checkbox:@"Keep RodentGym above other windows" key:kKeepOnTop]]];
-    [grid addRowWithViews:@[[NSGridCell emptyContentView], [self checkbox:@"Show the built-in trackpad" key:kShowBuiltIn]]];
+    NSPopUpButton *builtIn = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [builtIn addItemsWithTitles:@[@"Automatic (when the lid is open)", @"Always show", @"Never show"]];
+    [builtIn selectItemAtIndex:MIN(2, MAX(0, [ud integerForKey:kBuiltInMode]))];
+    builtIn.target = self;
+    builtIn.action = @selector(builtInModeChanged:);
+    builtIn.accessibilityLabel = @"Built-in trackpad";
+    [grid addRowWithViews:@[[self formLabel:@"Built-in trackpad:"], builtIn]];
 
     NSGridRow *spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
     spacer.height = 6;
@@ -1265,7 +1334,8 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     d->battery = -1;
     d->colorID = -1;
     NSString *product = regProp(d->service, @"Product", YES);
-    d.name = [product isKindOfClass:NSString.class] ? product : @"Multitouch device";
+    d.productName = [product isKindOfClass:NSString.class] ? product : @"Multitouch device";
+    d.name = builtIn ? @"Built-in trackpad" : d.productName;
     d->vendorID = intOf(regProp(d->service, @"VendorID", YES), 0);
     d->productID = intOf(regProp(d->service, @"ProductID", YES), 0);
     NSString *serial = regProp(d->service, @"SerialNumber", YES);
@@ -1330,7 +1400,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     NSDictionary *batt = registryValuesWithKey(@"BatteryPercent"), *col = registryValuesWithKey(@"ColorID");
     for (RGDevice *d in self.devices) {
         NSString *bySerial = d.identifier ? [@"serial:" stringByAppendingString:d.identifier] : @"";
-        NSString *byName = [@"product:" stringByAppendingString:d.name];
+        NSString *byName = [@"product:" stringByAppendingString:d.productName];
         NSNumber *b = batt[bySerial] ?: batt[byName], *c = col[bySerial] ?: col[byName];
         d->battery = b ? b.intValue : -1;
         d->colorID = c ? c.intValue : -1;
@@ -1406,7 +1476,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     NSString *serial = (__bridge NSString *)IOHIDDeviceGetProperty(h, CFSTR(kIOHIDSerialNumberKey));
     RGDevice *match = nil;
     for (RGDevice *d in self.devices)
-        if (([serial isKindOfClass:NSString.class] && [d.identifier isEqualToString:serial]) || [d.name isEqualToString:product]) { match = d; break; }
+        if (([serial isKindOfClass:NSString.class] && [d.identifier isEqualToString:serial]) || [d.productName isEqualToString:product]) { match = d; break; }
     self.hidCache[key] = match ?: NSNull.null;
     return match;
 }
@@ -1503,6 +1573,16 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         NSString *listening = hidOK && tapOK ? @"Listening" : @"Partly listening (see Help)";
         self.window.subtitle = [NSString stringWithFormat:@"%@ · %@", listening, statusLine];
     }
+    BOOL closed = lidClosed();
+    if (closed != lidIsClosed) {
+        lidIsClosed = closed;
+        BOOL hasBuiltIn = NO;
+        for (RGDevice *d in self.devices) if (d->kind == RGKindBuiltIn) hasBuiltIn = YES;
+        if (hasBuiltIn && self.live) {
+            [self log:closed ? @"· Lid closed: the built-in trackpad is unavailable" : @"· Lid opened: the built-in trackpad is available"];
+            [self relayout];
+        }
+    }
     CFPreferencesAppSynchronize(kCFPreferencesAnyApplication);
     if (self.live) [self refreshPrefs];
     if (++statusTicks % 30 == 0) [self refreshBatteryAndColour];
@@ -1575,6 +1655,8 @@ int main(int argc, const char *argv[]) {
 
         i = [args indexOfObject:@"--snapshot-game"];
         if (i != NSNotFound && i + 1 < args.count) return [[RGCheeseStack new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
+        i = [args indexOfObject:@"--snapshot-force"];
+        if (i != NSNotFound && i + 1 < args.count) return [[RGForceSensor new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
         i = [args indexOfObject:@"--snapshot-trainer"];
         if (i != NSNotFound && i + 1 < args.count) return [[RGGestureTrainer new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
 

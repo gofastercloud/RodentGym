@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 — 2026-10-25
+
+- **Built-in trackpad, automatically:** on a MacBook, the built-in trackpad appears whenever the lid is open and hides when it's closed, with lid changes logged. It's named after the Mac (for example "MacBook Pro (14-inch, M5)"). Settings › Built-in trackpad offers Automatic, Always show or Never show.
+- **Force Sensor** (Gym › Force Sensor, ⌘J): a 10-second scrolling graph of click pressure from a Force Touch trackpad, split into touch, click and Force Click bands. Left clicks draw blue, right clicks orange, and clicks with no force data (a Magic Mouse, say) draw dashed. It also shows a Liquid Glass live readout, peak pressure, click and Force Click counts, average peak per button, and your click-pressure and Force Click settings, with pause and clear in the toolbar.
+
 ## 0.1.0 — 2026-10-25
 
 First release.

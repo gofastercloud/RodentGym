@@ -35,6 +35,7 @@ case "${1:-}" in
     "$APP/Contents/MacOS/RodentGym" --snapshot "$PWD/docs/screenshot.png" --demo --appearance dark
     "$APP/Contents/MacOS/RodentGym" --snapshot-trainer "$PWD/docs/gesture-trainer.png" --appearance dark
     "$APP/Contents/MacOS/RodentGym" --snapshot-game "$PWD/docs/cheese-stack.png" --appearance light
+    "$APP/Contents/MacOS/RodentGym" --snapshot-force "$PWD/docs/force-sensor.png" --appearance light
     echo "Wrote docs/*.png" ;;
   *)
     pkill -x RodentGym 2>/dev/null || true

@@ -2,21 +2,23 @@
 
 **See what your Magic Mouse and Magic Trackpad send, and what macOS actually delivers.**
 
-RodentGym is a small native macOS app for diagnosing and exercising pointer input. Right-click doing nothing, clicks going missing, a gesture that seems to have stopped working: RodentGym shows each step between your finger and the app and tells you where things go wrong. It also has two workouts for reproducing intermittent problems: a falling-block game and a gesture trainer.
+RodentGym is a small native macOS app for diagnosing and exercising pointer input. Right-click doing nothing, clicks going missing, a gesture that seems to have stopped working: RodentGym shows each step between your finger and the app and tells you where things go wrong. It also has three workouts for reproducing intermittent problems: a falling-block game, a gesture trainer and a force sensor.
 
 ![RodentGym showing a Magic Mouse and Magic Trackpad](docs/screenshot.png)
 
-> **Status: 0.1.0, an early release.** RodentGym reads touch data from a private Apple framework, so treat it as a diagnostic tool rather than something to rely on across macOS updates.
+> **Status: 0.2.0, an early release.** RodentGym reads touch data from a private Apple framework, so treat it as a diagnostic tool rather than something to rely on across macOS updates.
 
 ## What it shows
 
-For every connected Magic Mouse and Magic Trackpad (and optionally a MacBook's built-in trackpad):
+For every connected Magic Mouse and Magic Trackpad, plus a MacBook's built-in trackpad whenever the lid is open:
 
 - **Live touches** on a drawing of the device at the sensor's real proportions, in the device's own colour. Touches that count as a secondary click are highlighted.
 - **Secondary-click zones** from your current settings, including the left/right split, left-handed mode and trackpad corner clicks.
 - **What the hardware sends**: the raw HID button reports, before macOS processes them.
 - **What macOS delivers**: the click events that actually reach apps.
 - **Device details**: model, firmware, connection, battery, colour, and the settings the driver is applying right now (not just what System Settings shows).
+
+On a MacBook, RodentGym notices the built-in trackpad and names it after your Mac. It shows the trackpad automatically while the lid is open and hides it when you close the lid (for example when using an external display); both changes are logged. Settings can show it always or never instead.
 
 When the hardware reports a click and macOS never delivers it, RodentGym flags it as **dropped**: a glass alert appears, a sound plays, and the log records the memory state at that moment. Clicks that arrive as the wrong button are flagged as **remapped**. Changes to secondary-click settings are logged as they happen. Live memory status is shown in the window's subtitle.
 
@@ -33,6 +35,16 @@ The sidebar is a checklist built from the gestures **you have switched on**, rea
 - **App gestures** are captured on the practice pad: click, tap to click, secondary click, double- and triple-click, Force Click, scroll, pinch to zoom, rotate, smart zoom, swipe between pages and three-finger drag.
 - **System gestures** are recognised from the raw touch data: Mission Control, App Exposé, swipes between full-screen apps, squeeze (Apps), spread (show desktop), Notification Centre and three-finger tap. macOS still acts on them, because RodentGym never intercepts input. The result is waiting in the checklist and history when you come back.
 - Gestures that are switched off show as off. If you perform one anyway, the banner tells you macOS will ignore it.
+
+## Force Sensor
+
+Open it with **Gym › Force Sensor** (⌘J) or the toolbar.
+
+![Force Sensor](docs/force-sensor.png)
+
+A 10-second scrolling graph of how hard you press, from a Force Touch trackpad (Magic Trackpad 2 or a MacBook trackpad). The scale is split into three bands: **touch** (before the click), **click** and **Force Click**. Left clicks draw blue and right clicks orange. A click that arrives with no force data, such as from a Magic Mouse, draws as a dashed line at the click level, because the mouse has no force sensor.
+
+The tiles underneath show your peak pressure, left and right click counts, Force Clicks with the average peak per button, and your trackpad's click-pressure and Force Click settings. With Force Click switched off, macOS stops reporting the second stage, so presses top out in the click band.
 
 ## Cheese Stack
 
@@ -53,7 +65,7 @@ The side panel counts every click and scroll, and shows how many clicks RodentGy
 
 RodentGym is a native AppKit app that follows Apple's current macOS design guidance:
 
-- **Liquid Glass** (macOS 26 and later) on the control layer only, as Apple recommends: the unified toolbar, the trainer's sidebar, the dropped-click alert, the trainer's banner and the game's overlays. Content stays on standard backgrounds. Older systems fall back to visual-effect materials.
+- **Liquid Glass** (macOS 26 and later) on the control layer only, as Apple recommends: the unified toolbar, the trainer's sidebar, the dropped-click alert, the trainer's banner, the force readout and the game's overlays. Content stays on standard backgrounds. Older systems fall back to visual-effect materials.
 - **Light and dark mode**, Increase Contrast and Reduce Transparency, using semantic system colours throughout. Animations respect Reduce Motion.
 - **SF Symbols** in the toolbar and menus, standard menu structure and shortcuts, and a standard settings form.
 - **Accessibility**: the custom views expose their content to VoiceOver, and recognised gestures and dropped clicks are announced.
@@ -80,7 +92,7 @@ Other options:
 ./build.sh --screenshot   # rebuild the images in docs/ with anonymised demo data
 
 # Open straight into the Gym
-open ~/Applications/RodentGym.app --args --show-trainer --show-game
+open ~/Applications/RodentGym.app --args --show-trainer --show-game --show-force
 ```
 
 There's no Xcode project: the app is a few Objective-C files built with `clang`, ad-hoc signed with the hardened runtime for local use.
@@ -94,6 +106,7 @@ There's no Xcode project: the app is a few Objective-C files built with `clang`,
 | Click events | Listen-only `CGEventTap` on the login session | What macOS delivered to apps |
 | Device details | IORegistry (`MultitouchPreferences`, `VersionNumber`, `BatteryPercent`, `ColorID`) | Model, firmware, battery, colour, effective settings |
 | Gesture settings | Driver preferences, `com.apple.dock`, global defaults | Which gestures are on, and with how many fingers |
+| Click pressure | `NSEvent` pressure events (stage and pressure) | How hard each click and Force Click was |
 
 A button report is matched against the click event that follows it within a configurable window (400 ms by default). Hot-plugging is handled through IOKit notifications.
 
