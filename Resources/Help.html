@@ -38,6 +38,14 @@
 <p><b>Clicks are DROPPED.</b> The hardware is fine. Something in macOS is discarding the click. Check the memory figures on those log lines, quit anything using a lot of memory or GPU, and restart if it keeps happening. If drops continue on an idle Mac, report it to Apple with Feedback Assistant and include the log lines.</p>
 <p><b>Trackpad clicks show "no button report".</b> Some trackpads don't send a separate button report for every click. RodentGym then matches the click to the trackpad you're touching instead.</p>
 
+<h2>Gesture Trainer</h2>
+<p>A checklist of every gesture you have switched on for each device. Open it with <b>Gym › Gesture Trainer</b> (⌘T). Do a gesture with the pointer over the practice pad and it's ticked off. The banner names what was recognised.</p>
+<ul>
+  <li><b>App gestures</b> (clicks, tap to click, Force Click, scroll, pinch, rotate, smart zoom, swipe between pages, three-finger drag) are captured on the pad.</li>
+  <li><b>System gestures</b> (Mission Control, App Exposé, full-screen swipes, squeeze, spread, Notification Centre) are recognised from the raw touches. macOS still acts on them, because RodentGym never blocks input. Come back to the trainer to see the result.</li>
+  <li>Gestures switched off in System Settings show as off. Use the toolbar buttons to open Trackpad or Mouse settings and change them.</li>
+</ul>
+
 <h2>Cheese Stack</h2>
 <p>A falling-block game that works every input, so intermittent problems show up while you play. Open it with <b>Gym › Cheese Stack</b> (⌘G).</p>
 <ul>
@@ -59,12 +67,12 @@
 
 <h2>Shortcuts</h2>
 <ul>
-  <li><code>⌘,</code> Settings · <code>⌘?</code> Help · <code>⌘G</code> Cheese Stack · <code>⌘K</code> Reset counters · <code>⌘L</code> Open log</li>
+  <li><code>⌘,</code> Settings · <code>⌘?</code> Help · <code>⌘G</code> Cheese Stack · <code>⌘T</code> Gesture Trainer · <code>⌘K</code> Reset counters · <code>⌘L</code> Open log</li>
   <li><code>⇧⌘M</code> Mouse settings · <code>⇧⌘T</code> Trackpad settings · <code>⇧⌘R</code> Rescan devices</li>
 </ul>
 
 <h2>Privacy and permissions</h2>
-<p>RodentGym only listens. It never changes, blocks or creates input. It watches mouse buttons only, never the keyboard, and nothing leaves your Mac. The log stays in your Library folder.</p>
+<p>RodentGym only listens. It never changes, blocks or creates input, and needs no Accessibility permission. It watches mouse buttons and touches only, never the keyboard, and nothing leaves your Mac. The log is readable only by you.</p>
 <p>Watching mouse click events doesn't normally need any permission. If the <b>macOS delivers</b> lights say "Unavailable", allow RodentGym under <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent">Privacy &amp; Security › Input Monitoring</a> and reopen it.</p>
 
 <h2>Limitations</h2>

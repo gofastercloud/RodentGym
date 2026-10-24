@@ -5,6 +5,7 @@
 // Space hard drop, P pause.
 
 #import "CheeseStack.h"
+#import "UI.h"
 
 #define COLS 10
 #define ROWS 20
@@ -37,22 +38,12 @@ static const CGFloat kCheeseRGB[7][3] = {
 static const long kLineScores[5] = {0, 100, 300, 500, 800};
 static NSString *const kBestKey = @"CheeseStackBest";
 
-static NSColor *grey(CGFloat w) { return [NSColor colorWithWhite:w alpha:1]; }
 static NSColor *cheese(int t, CGFloat a) {
     return [NSColor colorWithSRGBRed:kCheeseRGB[t][0] green:kCheeseRGB[t][1] blue:kCheeseRGB[t][2] alpha:a];
 }
 
 static void label(NSString *s, CGFloat x, CGFloat y, NSFont *f, NSColor *c) {
     [s drawAtPoint:NSMakePoint(x, y) withAttributes:@{NSFontAttributeName: f, NSForegroundColorAttributeName: c}];
-}
-
-static void centredLabel(NSString *s, NSRect r, NSFont *f, NSColor *c) {
-    NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
-    ps.alignment = NSTextAlignmentCenter;
-    NSDictionary *a = @{NSFontAttributeName: f, NSForegroundColorAttributeName: c, NSParagraphStyleAttributeName: ps};
-    NSRect b = [s boundingRectWithSize:NSMakeSize(r.size.width, CGFLOAT_MAX) options:NSStringDrawingUsesLineFragmentOrigin attributes:a];
-    [s drawWithRect:NSMakeRect(r.origin.x, NSMidY(r) - b.size.height / 2, r.size.width, b.size.height)
-            options:NSStringDrawingUsesLineFragmentOrigin attributes:a];
 }
 
 // One block of cheese: a rounded wedge with a highlight and a couple of holes.
@@ -90,7 +81,7 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
     RGPt cells[4];
     long score, lines, level, best;
     long leftClicks, rightClicks, scrollDrops, slams, dropsAtStart;
-    BOOL over, paused, started;
+    BOOL over, paused, started, frozen;   // frozen: demo scene for screenshots
     double gravityAcc, lastTick, flashLeft, flashRight, flashSlam, clearFlashUntil, lastSlam;
     int clearedRows[4], clearedCount;
     double scrollAcc;
@@ -99,6 +90,8 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
 @property (strong, readwrite) NSWindow *window;
 @property (strong) RGStackView *view;
 @property (strong) NSTimer *timer;
+@property (strong) NSView *overlay;
+@property (strong) NSTextField *overlayLabel;
 - (void)steerTo:(CGFloat)x;
 - (void)rotate:(int)dir;
 - (void)softDrop;
@@ -126,13 +119,14 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
             backing:NSBackingStoreBuffered defer:NO];
         self.window.title = @"Cheese Stack — a RodentGym workout";
-        self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+        self.window.tabbingMode = NSWindowTabbingModeDisallowed;
         self.window.releasedWhenClosed = NO;
         self.window.acceptsMouseMovedEvents = YES;
         self.window.delegate = self;
         self.view = [[RGStackView alloc] initWithFrame:NSMakeRect(0, 0, WIN_W, WIN_H)];
         self.view.game = self;
         self.window.contentView = self.view;
+        [self buildOverlay];
         [self.window center];
         [self.window setFrameAutosaveName:@"RodentGymCheeseStack"];
     }
@@ -144,6 +138,52 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
         [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
     }
     lastTick = CFAbsoluteTimeGetCurrent();
+}
+
+// Paused and game-over messages float over the board on Liquid Glass.
+- (void)buildOverlay {
+    NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 220, 150)];
+    self.overlayLabel = [NSTextField wrappingLabelWithString:@""];
+    self.overlayLabel.alignment = NSTextAlignmentCenter;
+    self.overlayLabel.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
+    self.overlayLabel.textColor = NSColor.labelColor;
+    self.overlayLabel.frame = NSMakeRect(14, 14, 192, 122);
+    self.overlayLabel.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [content addSubview:self.overlayLabel];
+    self.overlay = RGGlassView(content, 26);
+    self.overlay.frame = NSMakeRect(PAD + (BOARD_W - 220) / 2, PAD + (BOARD_H - 150) / 2, 220, 150);
+    self.overlay.hidden = YES;
+    self.overlay.accessibilityElement = YES;
+    self.overlay.accessibilityRole = NSAccessibilityStaticTextRole;
+    [self.view addSubview:self.overlay];
+}
+
+- (void)updateOverlay {
+    NSString *message = over ? [NSString stringWithFormat:@"Game over\n%ld points\n\nClick or press Space\nto play again", score]
+                      : paused ? @"Paused\n\nClick to resume" : nil;
+    if (!message || frozen) { self.overlay.hidden = YES; return; }
+    if (![self.overlayLabel.stringValue isEqualToString:message]) {
+        self.overlayLabel.stringValue = message;
+        self.overlay.accessibilityLabel = [message stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+        // Centre the text vertically inside the glass
+        NSSize fit = [self.overlayLabel sizeThatFits:NSMakeSize(192, 122)];
+        self.overlayLabel.frame = NSMakeRect(14, (150 - fit.height) / 2, 192, fit.height);
+    }
+    self.overlay.hidden = NO;
+}
+
+- (void)showDemo {
+    [self show];
+    for (int y = ROWS - 7; y < ROWS; y++)
+        for (int x = 0; x < COLS; x++)
+            if ((x * 7 + y * 3) % 11 != 0 && !(y < ROWS - 4 && x > 5)) board[y][x] = 1 + (x + y * 2) % 7;
+    type = 2; memcpy(cells, kShapes[2], sizeof cells); px = 6; py = 8;
+    nextType = 0;
+    score = 4820; lines = 23; level = 3; best = MAX(best, 6150);
+    leftClicks = 41; rightClicks = 37; scrollDrops = 52; slams = 9;
+    frozen = YES;
+    flashRight = CFAbsoluteTimeGetCurrent() + 3600;
+    self.view.needsDisplay = YES;
 }
 
 - (void)windowWillClose:(NSNotification *)n {
@@ -314,7 +354,7 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
 - (void)tick {
     double now = CFAbsoluteTimeGetCurrent(), dt = MIN(0.1, now - lastTick);
     lastTick = now;
-    if (started && !over && !paused) {
+    if (started && !over && !paused && !frozen) {
         double interval = MAX(0.06, 0.8 * pow(0.85, level - 1));
         gravityAcc += dt;
         while (gravityAcc >= interval && !over) {
@@ -322,6 +362,7 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
             if (![self tryMoveX:0 y:1]) [self lock];
         }
     }
+    [self updateOverlay];
     self.view.needsDisplay = YES;
 }
 
@@ -339,7 +380,6 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
     flashRight = CFAbsoluteTimeGetCurrent();
     RGStackView *v = [[RGStackView alloc] initWithFrame:NSMakeRect(0, 0, WIN_W, WIN_H)];
     v.game = self;
-    v.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
     [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
     return [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
@@ -448,15 +488,15 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
     RGCheeseStack *g = self.game;
     if (!g) return;
     double now = CFAbsoluteTimeGetCurrent();
-    [grey(0.09) setFill];
+    [NSColor.windowBackgroundColor setFill];
     NSRectFill(self.bounds);
 
     // Board
     NSRect boardRect = NSMakeRect(PAD, PAD, BOARD_W, BOARD_H);
-    [grey(0.125) setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(boardRect, -6, -6) xRadius:10 yRadius:10] fill];
-    [[NSColor colorWithWhite:1 alpha:0.035] setStroke];
+    RGDrawCard(NSInsetRect(boardRect, -6, -6), 14);
+    [[NSColor.separatorColor colorWithAlphaComponent:0.18] setStroke];
     NSBezierPath *grid = [NSBezierPath bezierPath];
+    grid.lineWidth = 0.5;
     for (int x = 1; x < COLS; x++) { [grid moveToPoint:NSMakePoint(PAD + x * CELL, PAD)]; [grid lineToPoint:NSMakePoint(PAD + x * CELL, PAD + BOARD_H)]; }
     for (int y = 1; y < ROWS; y++) { [grid moveToPoint:NSMakePoint(PAD, PAD + y * CELL)]; [grid lineToPoint:NSMakePoint(PAD + BOARD_W, PAD + y * CELL)]; }
     [grid stroke];
@@ -490,14 +530,6 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
             NSRectFillUsingOperation(NSMakeRect(PAD, PAD + g->clearedRows[i] * CELL, BOARD_W, CELL), NSCompositingOperationSourceOver);
     }
 
-    NSString *overlay = g->over ? [NSString stringWithFormat:@"Game over\n\n%ld points\n\nClick or press Space\nto play again", g->score]
-                      : g->paused ? @"Paused\n\nClick to resume" : nil;
-    if (overlay) {
-        [[NSColor colorWithWhite:0 alpha:0.62] setFill];
-        NSRectFillUsingOperation(boardRect, NSCompositingOperationSourceOver);
-        centredLabel(overlay, boardRect, [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold], NSColor.whiteColor);
-    }
-
     [self drawPanel:now];
 }
 
@@ -508,15 +540,14 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
     NSFont *num = [NSFont monospacedDigitSystemFontOfSize:20 weight:NSFontWeightSemibold];
     NSFont *mono = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium];
 
-    label(@"Cheese Stack", x, y, [NSFont systemFontOfSize:20 weight:NSFontWeightBold], [NSColor colorWithSRGBRed:1 green:0.78 blue:0.3 alpha:1]);
-    label(@"a RodentGym workout", x, y + 26, small, grey(0.55));
+    label(@"Cheese Stack", x, y, [NSFont systemFontOfSize:20 weight:NSFontWeightBold], NSColor.systemOrangeColor);
+    label(@"a RodentGym workout", x, y + 26, small, NSColor.secondaryLabelColor);
 
     // Next piece
     y += 52;
-    label([@"NEXT · " stringByAppendingString:[kCheeseNames[g->nextType] uppercaseString]], x, y, head, grey(0.6));
+    label([@"NEXT · " stringByAppendingString:[kCheeseNames[g->nextType] uppercaseString]], x, y, head, NSColor.secondaryLabelColor);
     NSRect box = NSMakeRect(x, y + 18, w, 62);
-    [grey(0.125) setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:box xRadius:8 yRadius:8] fill];
+    RGDrawCard(box, 12);
     CGFloat mc = 18;
     int minX = 9, maxX = 0, minY = 9, maxY = 0;
     for (int i = 0; i < 4; i++) {
@@ -532,31 +563,31 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
     NSArray *stats = @[@[@"SCORE", @(g->score)], @[@"LINES", @(g->lines)], @[@"LEVEL", @(g->level)], @[@"BEST", @(MAX(g->best, g->score))]];
     for (NSUInteger i = 0; i < stats.count; i++) {
         CGFloat sx = x + (i % 2) * (w / 2), sy = y + (i / 2) * 46;
-        label(stats[i][0], sx, sy, head, grey(0.55));
-        label([stats[i][1] stringValue], sx, sy + 14, num, grey(0.93));
+        label(stats[i][0], sx, sy, head, NSColor.secondaryLabelColor);
+        label([stats[i][1] stringValue], sx, sy + 14, num, NSColor.labelColor);
     }
 
     // Inputs: each button lights briefly when it arrives, so a missing click is obvious
     y += 104;
-    label(@"INPUTS THIS GAME", x, y, head, grey(0.55));
+    label(@"INPUTS THIS GAME", x, y, head, NSColor.secondaryLabelColor);
     y += 18;
     NSArray *pads = @[@[@"↺  Left", @(g->leftClicks), @(g->flashLeft)], @[@"↻  Right", @(g->rightClicks), @(g->flashRight)]];
     for (NSUInteger i = 0; i < 2; i++) {
         NSRect r = NSMakeRect(x + i * (w / 2 + 3), y, w / 2 - 3, 46);
         BOOL lit = now - [pads[i][2] doubleValue] < 0.18;
-        NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:r xRadius:8 yRadius:8];
-        [(lit ? [NSColor colorWithSRGBRed:0.2 green:0.68 blue:0.36 alpha:1] : grey(0.17)) setFill];
+        NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:r xRadius:12 yRadius:12];
+        [(lit ? NSColor.systemGreenColor : NSColor.tertiarySystemFillColor) setFill];
         [p fill];
-        label(pads[i][0], r.origin.x + 10, r.origin.y + 6, head, lit ? NSColor.whiteColor : grey(0.65));
-        label([pads[i][1] stringValue], r.origin.x + 10, r.origin.y + 21, num, lit ? NSColor.whiteColor : grey(0.9));
+        label(pads[i][0], r.origin.x + 10, r.origin.y + 6, head, lit ? NSColor.whiteColor : NSColor.secondaryLabelColor);
+        label([pads[i][1] stringValue], r.origin.x + 10, r.origin.y + 21, num, lit ? NSColor.whiteColor : NSColor.labelColor);
     }
     y += 54;
     label([NSString stringWithFormat:@"Scroll drops %ld · slams %ld", g->scrollDrops, g->slams], x, y, mono,
-          now - g->flashSlam < 0.18 ? [NSColor colorWithSRGBRed:1 green:0.78 blue:0.3 alpha:1] : grey(0.75));
+          now - g->flashSlam < 0.18 ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor);
     long dropped = [g droppedThisGame];
     y += 20;
     label([NSString stringWithFormat:@"Dropped clicks %ld", dropped], x, y, mono,
-          dropped ? [NSColor colorWithSRGBRed:1 green:0.38 blue:0.32 alpha:1] : [NSColor colorWithSRGBRed:0.35 green:0.8 blue:0.5 alpha:1]);
+          dropped ? NSColor.systemRedColor : NSColor.systemGreenColor);
 
     // Setup warning (e.g. right-click switched off) and controls
     NSString *warning = g.inputWarning ? g.inputWarning() : nil;
@@ -564,11 +595,11 @@ static void drawCheese(NSRect r, int type, unsigned seed, CGFloat alpha) {
     if (warning.length) {
         NSRect r = NSMakeRect(x, y, w, 58);
         [[NSString stringWithFormat:@"⚠︎ %@", warning] drawWithRect:r options:NSStringDrawingUsesLineFragmentOrigin
-            attributes:@{NSFontAttributeName: small, NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:1 green:0.72 blue:0.28 alpha:1]}];
+            attributes:@{NSFontAttributeName: small, NSForegroundColorAttributeName: NSColor.systemOrangeColor}];
         y += 62;
     }
     NSString *help = @"Steer with the pointer\nLeft click ↺ · right click ↻\nScroll to drop · flick to slam\nKeys: ← → ↑ Z X ↓ Space · P pause";
     [help drawWithRect:NSMakeRect(x, MAX(y, PAD + BOARD_H - 62), w, 64) options:NSStringDrawingUsesLineFragmentOrigin
-        attributes:@{NSFontAttributeName: small, NSForegroundColorAttributeName: grey(0.5)}];
+        attributes:@{NSFontAttributeName: small, NSForegroundColorAttributeName: NSColor.secondaryLabelColor}];
 }
 @end

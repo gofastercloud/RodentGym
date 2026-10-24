@@ -18,6 +18,9 @@
 
 - (void)show;
 
+/// Shows the game with a frozen, anonymised demo scene (used to capture README screenshots).
+- (void)showDemo;
+
 /// Renders a demo game to a PNG (used for the README screenshot).
 - (BOOL)writeDemoSnapshotTo:(NSString *)path;
 

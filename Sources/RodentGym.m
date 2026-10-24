@@ -11,7 +11,6 @@
 // MIT License — see LICENSE.
 
 #import <Cocoa/Cocoa.h>
-#import "CheeseStack.h"
 #import <IOKit/IOKitLib.h>
 #import <IOKit/hid/IOHIDManager.h>
 #import <IOKit/hid/IOHIDKeys.h>
@@ -19,21 +18,17 @@
 #import <ApplicationServices/ApplicationServices.h>
 #import <os/lock.h>
 #include <sys/sysctl.h>
+#import "Multitouch.h"
+#import "UI.h"
+#import "CheeseStack.h"
+#import "GestureTrainer.h"
 
 #define APP_NAME    @"RodentGym"
-#define APP_VERSION @"1.1"
+#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.1.0")
 #define LOG_PATH    [@"~/Library/Logs/RodentGym.log" stringByExpandingTildeInPath]
 
 #pragma mark - MultitouchSupport (private framework)
 
-typedef struct { float x, y; } MTPoint;
-typedef struct { MTPoint pos, vel; } MTReadout;
-typedef struct {
-    int frame; double timestamp; int identifier, state, fingerID, handID;
-    MTReadout normalized; float size; int zero1;
-    float angle, majorAxis, minorAxis;
-    MTReadout mm; int zero2[2]; float unk2;
-} MTFinger;
 typedef void *MTDeviceRef;
 typedef int (*MTContactCallback)(MTDeviceRef, MTFinger *, int, double, int);
 extern CFMutableArrayRef MTDeviceCreateList(void);
@@ -46,7 +41,6 @@ extern bool MTDeviceIsBuiltIn(MTDeviceRef);
 extern io_service_t MTDeviceGetService(MTDeviceRef);
 extern int MTDeviceGetSensorSurfaceDimensions(MTDeviceRef, int *, int *);
 
-#define MAX_TOUCHES 16
 #define MAX_DEVICES 8
 
 // Touch frames arrive on a MultitouchSupport thread; they are copied into fixed slots under a lock.
@@ -69,7 +63,7 @@ static int contactCallback(MTDeviceRef dev, MTFinger *f, int n, double ts, int f
     return 0;
 }
 
-static int copyTouches(int slot, MTFinger *out) {
+int RGCopyTouches(int slot, MTFinger *out) {
     os_unfair_lock_lock(&gLock);
     int n = (slot >= 0 && slot < gSlotCount) ? gSlots[slot].count : 0;
     if (n) memcpy(out, gSlots[slot].touches, sizeof(MTFinger) * (size_t)n);
@@ -77,26 +71,20 @@ static int copyTouches(int slot, MTFinger *out) {
     return n;
 }
 
-#pragma mark - Settings keys and small helpers
+#pragma mark - Settings keys and helpers
 
 static NSString *const kKeepOnTop = @"KeepOnTop";
 static NSString *const kShowBuiltIn = @"ShowBuiltInTrackpad";
 static NSString *const kDropSound = @"PlaySoundOnDrop";
 static NSString *const kLogAll = @"LogEveryClick";
 static NSString *const kMatchMs = @"MatchWindowMs";
-static NSString *const kFinishes = @"ColourFinishes";   // { "<ColorID>": "white" | "black" }
+static NSString *const kFinishes = @"ColourFinishes";   // { "<ColorID>": "white" | "black" } overrides
 
 static NSString *const kButtonName[4] = {@"", @"Left", @"Right", @"Middle"};
 static int otherButton(int b) { return b == 1 ? 2 : (b == 2 ? 1 : 0); }
 
-static NSColor *gray(CGFloat w) { return [NSColor colorWithWhite:w alpha:1]; }
 static NSColor *rgb(CGFloat r, CGFloat g, CGFloat b) { return [NSColor colorWithSRGBRed:r green:g blue:b alpha:1]; }
-#define ORANGE rgb(1.0, 0.55, 0.15)
-#define GREEN  rgb(0.20, 0.68, 0.36)
-#define RED    rgb(1.0, 0.38, 0.32)
-#define AMBER  rgb(1.0, 0.72, 0.28)
-#define BLUE   rgb(0.25, 0.55, 1.0)
-
+static NSColor *grey(CGFloat w) { return [NSColor colorWithWhite:w alpha:1]; }
 static int intOf(id v, int def) { return [v respondsToSelector:@selector(intValue)] ? [v intValue] : def; }
 
 static id regProp(io_registry_entry_t e, NSString *key, BOOL searchParents) {
@@ -121,8 +109,8 @@ static NSString *firmwareString(int v) {
     return [parts componentsJoinedByString:@"."];
 }
 
-// Finds every registry entry carrying `key` (e.g. BatteryPercent, ColorID) and indexes the value
-// by the owning device's serial number and product name.
+// Finds every registry entry carrying `key` (e.g. BatteryPercent, ColorID), indexed by the owning
+// device's serial number and product name.
 static NSDictionary<NSString *, NSNumber *> *registryValuesWithKey(NSString *key) {
     NSMutableDictionary *out = [NSMutableDictionary dictionary];
     NSDictionary *match = @{@"IOPropertyExistsMatch": key};
@@ -145,30 +133,31 @@ static NSDictionary<NSString *, NSNumber *> *registryValuesWithKey(NSString *key
 #pragma mark - Device model
 
 typedef NS_ENUM(NSInteger, RGKind) { RGKindMouse, RGKindTrackpad, RGKindBuiltIn };
+
 // How a surface is drawn: a light or dark top, and the colour of the aluminium edge.
 typedef struct { BOOL darkTop; CGFloat rimR, rimG, rimB; } RGStyle;
 static const RGStyle kLightStyle = {NO, 0.86, 0.86, 0.87};
 static const RGStyle kDarkStyle = {YES, 0.42, 0.43, 0.45};
 
-// Apple accessory colour codes, as reported in the IORegistry `ColorID` property. The same table
-// is used in Continuity proximity-pairing adverts (see furiousMAC/continuity, airpods_color_vals),
-// and macOS's CoreUtils carries the same ordered names. Verified: Magic Mouse 2 white = 0,
-// Magic Trackpad 2 space grey = 5, space grey Apple silicon MacBook built-in trackpad = 9.
+// Apple accessory colour codes, as reported in the IORegistry `ColorID` property. The same table is
+// used in Continuity proximity-pairing adverts (furiousMAC/continuity, airpods_color_vals) and macOS's
+// CoreUtils carries the same ordered names. Verified: Magic Mouse 2 white = 0, Magic Trackpad 2 space
+// grey = 5, space grey Apple silicon MacBook built-in trackpad = 9.
 typedef struct { int code; __unsafe_unretained NSString *name; RGStyle style; } RGColour;
 static const RGColour kColours[] = {
-    {0,  @"White",      {NO,  0.86, 0.86, 0.87}},
-    {1,  @"Black",      {YES, 0.80, 0.80, 0.82}},   // black surface on silver aluminium
-    {2,  @"Red",        {NO,  0.78, 0.24, 0.26}},
-    {3,  @"Blue",       {NO,  0.30, 0.46, 0.78}},
-    {4,  @"Pink",       {NO,  0.93, 0.64, 0.68}},
+    {0,  @"White",             {NO,  0.86, 0.86, 0.87}},
+    {1,  @"Black",             {YES, 0.80, 0.80, 0.82}},   // black surface on silver aluminium
+    {2,  @"Red",               {NO,  0.78, 0.24, 0.26}},
+    {3,  @"Blue",              {NO,  0.30, 0.46, 0.78}},
+    {4,  @"Pink",              {NO,  0.93, 0.64, 0.68}},
     {5,  @"Grey / space grey", {YES, 0.42, 0.43, 0.45}},   // 2017 space grey Magic Trackpad 2 reports 5
-    {6,  @"Silver",     {NO,  0.86, 0.86, 0.87}},
-    {7,  @"Gold",       {NO,  0.89, 0.79, 0.62}},
-    {8,  @"Rose Gold",  {NO,  0.91, 0.73, 0.69}},
-    {9,  @"Space Grey", {YES, 0.42, 0.43, 0.45}},
-    {10, @"Dark Blue",  {YES, 0.18, 0.25, 0.42}},
-    {11, @"Light Blue", {NO,  0.64, 0.79, 0.91}},
-    {12, @"Yellow",     {NO,  0.95, 0.83, 0.42}},
+    {6,  @"Silver",            {NO,  0.86, 0.86, 0.87}},
+    {7,  @"Gold",              {NO,  0.89, 0.79, 0.62}},
+    {8,  @"Rose Gold",         {NO,  0.91, 0.73, 0.69}},
+    {9,  @"Space Grey",        {YES, 0.42, 0.43, 0.45}},
+    {10, @"Dark Blue",         {YES, 0.18, 0.25, 0.42}},
+    {11, @"Light Blue",        {NO,  0.64, 0.79, 0.91}},
+    {12, @"Yellow",            {NO,  0.95, 0.83, 0.42}},
 };
 
 static const RGColour *colourForCode(int code) {
@@ -255,7 +244,7 @@ static NSString *modelName(int productID, RGKind kind) {
 - (NSString *)key { return self.identifier ?: self.name; }
 @end
 
-#pragma mark - Drawing helpers
+#pragma mark - Drawing
 
 static void text(NSString *s, CGFloat x, CGFloat y, NSFont *f, NSColor *c) {
     [s drawAtPoint:NSMakePoint(x, y) withAttributes:@{NSFontAttributeName: f, NSForegroundColorAttributeName: c}];
@@ -264,12 +253,6 @@ static void text(NSString *s, CGFloat x, CGFloat y, NSFont *f, NSColor *c) {
 static void rtext(NSString *s, CGFloat right, CGFloat y, NSFont *f, NSColor *c) {
     NSDictionary *a = @{NSFontAttributeName: f, NSForegroundColorAttributeName: c};
     [s drawAtPoint:NSMakePoint(right - [s sizeWithAttributes:a].width, y) withAttributes:a];
-}
-
-static void textIn(NSString *s, NSRect r, NSFont *f, NSColor *c) {
-    NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
-    ps.lineBreakMode = NSLineBreakByTruncatingTail;
-    [s drawInRect:r withAttributes:@{NSFontAttributeName: f, NSForegroundColorAttributeName: c, NSParagraphStyleAttributeName: ps}];
 }
 
 static void centred(NSString *s, NSRect r, NSFont *f, NSColor *c) {
@@ -291,27 +274,6 @@ static void verticalLabel(NSString *s, NSPoint centre, NSFont *f, NSColor *c) {
     [NSGraphicsContext restoreGraphicsState];
 }
 
-static void lamp(NSRect r, NSString *label, BOOL on) {
-    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:r xRadius:8 yRadius:8];
-    [(on ? GREEN : gray(0.2)) setFill];
-    [p fill];
-    [gray(on ? 0.9 : 0.32) setStroke];
-    p.lineWidth = 1;
-    [p stroke];
-    centred(label, r, [NSFont systemFontOfSize:12.5 weight:NSFontWeightSemibold], on ? NSColor.whiteColor : gray(0.6));
-}
-
-static void panel(NSRect r) {
-    NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:r xRadius:12 yRadius:12];
-    [gray(0.135) setFill];
-    [bg fill];
-    [gray(0.22) setStroke];
-    bg.lineWidth = 1;
-    [bg stroke];
-}
-
-#pragma mark - Device surfaces
-
 // Top-down outline: the mouse shell has elliptical ends; the trackpad is a rounded glass slab.
 static NSBezierPath *surfacePath(RGKind kind, NSRect r) {
     if (kind == RGKindMouse)
@@ -331,7 +293,7 @@ static void drawSurface(RGKind kind, NSRect r, RGStyle style) {
 
     [NSGraphicsContext saveGraphicsState];
     NSShadow *shadow = [NSShadow new];
-    shadow.shadowColor = [NSColor colorWithWhite:0 alpha:0.6];
+    shadow.shadowColor = [NSColor colorWithWhite:0 alpha:0.35];
     shadow.shadowBlurRadius = MAX(6, r.size.width * 0.08);
     shadow.shadowOffset = NSMakeSize(0, -r.size.width * 0.025);
     [shadow set];
@@ -339,15 +301,14 @@ static void drawSurface(RGKind kind, NSRect r, RGStyle style) {
     [base fill];
     [NSGraphicsContext restoreGraphicsState];
 
-    // Aluminium edge in the device's colour, lit from above
     NSGradient *rim = [[NSGradient alloc] initWithStartingColor:blend(rimColour, NSColor.whiteColor, 0.45)
                                                     endingColor:blend(rimColour, NSColor.blackColor, 0.4)];
     [rim drawInBezierPath:base angle:90 * down];
 
     NSBezierPath *top = surfacePath(kind, r);
     NSGradient *body = black
-        ? [[NSGradient alloc] initWithColorsAndLocations:gray(0.25), 0.0, gray(0.13), 0.55, gray(0.06), 1.0, nil]
-        : [[NSGradient alloc] initWithColorsAndLocations:gray(1.0), 0.0, gray(0.955), 0.55, gray(0.83), 1.0, nil];
+        ? [[NSGradient alloc] initWithColorsAndLocations:grey(0.25), 0.0, grey(0.13), 0.55, grey(0.06), 1.0, nil]
+        : [[NSGradient alloc] initWithColorsAndLocations:grey(1.0), 0.0, grey(0.955), 0.55, grey(0.83), 1.0, nil];
     if (kind == RGKindMouse) [body drawInBezierPath:top relativeCenterPosition:NSMakePoint(-0.3, -0.45 * down)];
     else [body drawInBezierPath:top angle:60 * down];
 
@@ -376,17 +337,7 @@ static NSImage *appIcon(CGFloat size) {
         CGFloat s = r.size.width;
         NSRect tile = NSInsetRect(r, s * 0.098, s * 0.098);
         NSBezierPath *sq = [NSBezierPath bezierPathWithRoundedRect:tile xRadius:tile.size.width * 0.225 yRadius:tile.size.width * 0.225];
-        [NSGraphicsContext saveGraphicsState];
-        NSShadow *sh = [NSShadow new];
-        sh.shadowColor = [NSColor colorWithWhite:0 alpha:0.35];
-        sh.shadowBlurRadius = s * 0.02;
-        sh.shadowOffset = NSMakeSize(0, -s * 0.01);
-        [sh set];
-        [rgb(0.07, 0.09, 0.14) setFill];
-        [sq fill];
-        [NSGraphicsContext restoreGraphicsState];
         [[[NSGradient alloc] initWithStartingColor:rgb(0.17, 0.23, 0.36) endingColor:rgb(0.04, 0.06, 0.11)] drawInBezierPath:sq angle:-90];
-
         NSRect mouse = NSMakeRect(NSMidX(tile) - s * 0.15, NSMidY(tile) - s * 0.27, s * 0.30, s * 0.52);
         NSPoint touch = NSMakePoint(mouse.origin.x + mouse.size.width * 0.74, mouse.origin.y + mouse.size.height * 0.74);
         [NSGraphicsContext saveGraphicsState];
@@ -403,7 +354,7 @@ static NSImage *appIcon(CGFloat size) {
         CGFloat dot = s * 0.045;
         [[NSColor colorWithSRGBRed:1 green:0.55 blue:0.15 alpha:0.35] setFill];
         [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(touch.x - dot * 1.8, touch.y - dot * 1.8, dot * 3.6, dot * 3.6)] fill];
-        [ORANGE setFill];
+        [rgb(1.0, 0.55, 0.15) setFill];
         [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(touch.x - dot, touch.y - dot, dot * 2, dot * 2)] fill];
         return YES;
     }];
@@ -423,16 +374,14 @@ static BOOL writeIconPNG(NSString *path, int px) {
 #pragma mark - Controller interface
 
 #define CARD_W    300.0
-#define CARD_H    426.0
-#define MARGIN    16.0
-#define TOOLBAR_H 46.0
-#define DELIVER_H 70.0
-#define STATUS_H  24.0
-#define LOG_H     152.0
+#define CARD_H    424.0
+#define MARGIN    20.0
+#define DELIVER_H 72.0
+#define LOG_H     150.0
 
 @class RGView;
 
-@interface RGController : NSObject <NSApplicationDelegate> {
+@interface RGController : NSObject <NSApplicationDelegate, NSToolbarDelegate> {
 @public
     double hidPending[4], evtPending[4];
     __strong RGDevice *hidPendingDevice[4], *evtToucher[4];
@@ -440,7 +389,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
     BOOL evtDown[4], anonHidDown[4];
     long delivered[4], remappedTotal, totalDrops;
     double lastDrop;
-    NSString *lastDropText, *statusLine;
+    NSString *statusLine;
     NSMutableArray<NSString *> *lines;
     CFMachPortRef tap;
     IOHIDManagerRef hid;
@@ -452,7 +401,10 @@ static BOOL writeIconPNG(NSString *path, int px) {
 }
 @property (strong) NSWindow *window, *settingsWindow, *helpWindow;
 @property (strong) RGView *view;
+@property (strong) NSView *toast;
+@property (strong) NSTextField *toastLabel;
 @property (strong) RGCheeseStack *game;
+@property (strong) RGGestureTrainer *trainer;
 @property (strong) NSTextField *matchLabel;
 @property (strong) NSArray<RGDevice *> *devices;
 @property (strong) NSMutableDictionary *hidCache;
@@ -460,11 +412,12 @@ static BOOL writeIconPNG(NSString *path, int px) {
 @property (strong) NSFileHandle *logFile;
 @property (strong) NSDateFormatter *shortFmt, *longFmt;
 @property (copy) NSString *snapshotPath;
-@property BOOL demo;
+@property BOOL demo, live;
 - (NSArray<RGDevice *> *)visibleDevices;
 - (RGStyle)styleFor:(RGDevice *)d;
 - (NSString *)colourTextFor:(RGDevice *)d;
 - (double)matchWindow;
+- (CGFloat)topInset;
 - (void)hidButton:(int)b down:(BOOL)down device:(IOHIDDeviceRef)h;
 - (void)event:(int)b down:(BOOL)down;
 - (void)rescanDevices:(id)sender;
@@ -512,36 +465,42 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 
 - (BOOL)isFlipped { return YES; }
 
+- (NSRect)cardRect:(NSUInteger)i {
+    return NSMakeRect(MARGIN + i * (CARD_W + MARGIN), self.c.topInset + 12, CARD_W, CARD_H);
+}
+- (NSRect)deliveredRect {
+    return NSMakeRect(MARGIN, self.c.topInset + 12 + CARD_H + MARGIN, self.bounds.size.width - 2 * MARGIN, DELIVER_H);
+}
+- (NSRect)logRect {
+    NSRect d = self.deliveredRect;
+    return NSMakeRect(MARGIN, NSMaxY(d) + MARGIN, d.size.width, LOG_H);
+}
+
 - (void)drawRect:(NSRect)dirty {
     RGController *c = self.c;
     if (!c) return;
-    [gray(0.09) setFill];
+    [NSColor.windowBackgroundColor setFill];
     NSRectFill(self.bounds);
     NSArray<RGDevice *> *devs = c.visibleDevices;
-    CGFloat w = self.bounds.size.width - 2 * MARGIN;
     if (devs.count == 0)
-        centred(@"No Magic Mouse or Magic Trackpad found", NSMakeRect(MARGIN, TOOLBAR_H, w, CARD_H),
-                [NSFont systemFontOfSize:14], gray(0.5));
-    for (NSUInteger i = 0; i < devs.count; i++)
-        [self drawCard:devs[i] in:NSMakeRect(MARGIN + i * (CARD_W + MARGIN), TOOLBAR_H, CARD_W, CARD_H)];
-    CGFloat y = TOOLBAR_H + CARD_H + MARGIN;
-    [self drawDelivered:NSMakeRect(MARGIN, y, w, DELIVER_H)];
-    y += DELIVER_H + 5;
-    textIn(c->statusLine ?: @"", NSMakeRect(MARGIN + 2, y, w, 15), [NSFont systemFontOfSize:10.5], gray(0.55));
-    [self drawLog:NSMakeRect(MARGIN, y + STATUS_H - 5, w, LOG_H)];
+        RGDrawText(@"No Magic Mouse or Magic Trackpad found", NSInsetRect([self cardRect:0], 0, CARD_H / 2 - 10),
+                   [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor, NSTextAlignmentCenter);
+    for (NSUInteger i = 0; i < devs.count; i++) [self drawCard:devs[i] in:[self cardRect:i]];
+    [self drawDelivered:self.deliveredRect];
+    [self drawLog:self.logRect];
 }
 
 - (void)drawCard:(RGDevice *)d in:(NSRect)card {
     RGController *c = self.c;
-    panel(card);
-    CGFloat x = card.origin.x + 14, y = card.origin.y, iw = card.size.width - 28;
-    textIn(c.demo ? (d->kind == RGKindMouse ? @"Magic Mouse" : @"Magic Trackpad") : d.name,
-           NSMakeRect(x, y + 11, iw, 19), [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold], gray(0.93));
+    RGDrawCard(card, 16);
+    CGFloat x = card.origin.x + 16, y = card.origin.y, iw = card.size.width - 32;
+    NSString *title = c.demo ? (d->kind == RGKindMouse ? @"Magic Mouse" : @"Magic Trackpad") : d.name;
+    RGDrawText(title, NSMakeRect(x, y + 14, iw, 20), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], NSColor.labelColor, NSTextAlignmentLeft);
     NSString *sub = (c.demo || !d.identifier.length) ? d.model : [NSString stringWithFormat:@"%@ · %@", d.model, d.identifier];
-    textIn(sub, NSMakeRect(x, y + 30, iw, 15), [NSFont systemFontOfSize:11], gray(0.55));
+    RGDrawText(sub, NSMakeRect(x, y + 35, iw, 16), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor, NSTextAlignmentLeft);
 
     // Surface, drawn at the sensor's real aspect ratio
-    NSRect area = NSMakeRect(x + 8, y + 58, iw - 16, 194);
+    NSRect area = NSMakeRect(x + 6, y + 62, iw - 12, 190);
     double aspect = (d->widthMM > 0 && d->heightMM > 0) ? d->widthMM / d->heightMM : (d->kind == RGKindMouse ? 0.57 : 1.41);
     NSSize sz = (area.size.width / area.size.height > aspect) ? NSMakeSize(area.size.height * aspect, area.size.height)
                                                               : NSMakeSize(area.size.width, area.size.width / aspect);
@@ -552,10 +511,10 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     [self drawTouches:d surface:s];
 
     // What the hardware reports
-    CGFloat ly = y + 264, lw = (iw - 52 - 8) / 2;
-    text(@"Sends", x, ly + 8, [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], gray(0.6));
-    lamp(NSMakeRect(x + 52, ly, lw, 30), @"Left", d->hidDown[1]);
-    lamp(NSMakeRect(x + 52 + lw + 8, ly, lw, 30), @"Right", d->hidDown[2]);
+    CGFloat ly = y + 266, lw = (iw - 56 - 8) / 2;
+    text(@"Sends", x, ly + 7, [NSFont systemFontOfSize:12 weight:NSFontWeightMedium], NSColor.secondaryLabelColor);
+    RGDrawLight(NSMakeRect(x + 56, ly, lw, 30), @"Left", d->hidDown[1], NSColor.systemGreenColor);
+    RGDrawLight(NSMakeRect(x + 56 + lw + 8, ly, lw, 30), @"Right", d->hidDown[2], NSColor.systemGreenColor);
 
     // Hardware details and the settings the driver is applying
     NSMutableArray *hw = [NSMutableArray array];
@@ -569,21 +528,22 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     NSFont *f = [NSFont systemFontOfSize:11];
     for (NSString *l in info) {
         BOOL warn = [l hasPrefix:@"Secondary click: Off"];
-        textIn(l, NSMakeRect(x, ty, iw, 15), f, warn ? AMBER : gray(0.72));
+        RGDrawText(l, NSMakeRect(x, ty, iw, 15), warn ? [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold] : f,
+                   warn ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor, NSTextAlignmentLeft);
         ty += 15.5;
     }
     NSFont *mono = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
-    text([NSString stringWithFormat:@"Sent  L %ld  R %ld", d->sent[1], d->sent[2]], x, ty + 3, mono, gray(0.82));
+    text([NSString stringWithFormat:@"Sent  L %ld  R %ld", d->sent[1], d->sent[2]], x, ty + 3, mono, NSColor.labelColor);
     long drops = d->dropped[1] + d->dropped[2] + d->dropped[3];
     rtext([NSString stringWithFormat:@"Dropped  L %ld  R %ld", d->dropped[1], d->dropped[2]], x + iw, ty + 3,
-          drops ? [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightBold] : mono, drops ? RED : gray(0.82));
+          drops ? [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightBold] : mono, drops ? NSColor.systemRedColor : NSColor.labelColor);
 }
 
 - (void)drawZones:(RGDevice *)d surface:(NSRect)s dark:(BOOL)dark {
-    NSColor *ink = dark ? gray(0.62) : gray(0.42);
+    NSColor *ink = dark ? grey(0.62) : grey(0.42);
     NSColor *accent = rgb(0.92, 0.5, 0.1);
     NSFont *f = [NSFont systemFontOfSize:9.5 weight:NSFontWeightSemibold];
-    NSColor *zoneFill = [ORANGE colorWithAlphaComponent:0.16];
+    NSColor *zoneFill = [rgb(1.0, 0.55, 0.15) colorWithAlphaComponent:0.16];
     int z = d.secondaryZone;
     [NSGraphicsContext saveGraphicsState];
     [surfacePath(d->kind, s) addClip];
@@ -605,9 +565,8 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
             CGFloat dash[] = {4, 3};
             [line setLineDash:dash count:2 phase:0];
             line.lineWidth = 1.2;
-            [[ORANGE colorWithAlphaComponent:0.8] setStroke];
+            [[accent colorWithAlphaComponent:0.8] setStroke];
             [line stroke];
-            // Labels run along each zone so they fit however narrow the zone is
             CGFloat ly = s.origin.y + s.size.height * 0.58;
             verticalLabel(@"PRIMARY", NSMakePoint(NSMidX(primary), ly), f, ink);
             verticalLabel(@"SECONDARY", NSMakePoint(NSMidX(zone), ly), f, accent);
@@ -628,7 +587,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 
 - (void)drawTouches:(RGDevice *)d surface:(NSRect)s {
     MTFinger t[MAX_TOUCHES];
-    int n = copyTouches(d->slot, t);
+    int n = RGCopyTouches(d->slot, t);
     int z = d.secondaryZone;
     float div = d.division;
     for (int i = 0; i < n; i++) {
@@ -639,63 +598,93 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
         else if (z == 1) secondary = n >= 2;
         else if (z >= 2) secondary = ty <= 0.28 && (z == 2 ? tx >= 0.75 : tx <= 0.25);
         else secondary = NO;
-        NSColor *col = secondary ? ORANGE : BLUE;
+        NSColor *col = secondary ? NSColor.systemOrangeColor : NSColor.systemBlueColor;
         CGFloat r = 7 + MIN(t[i].size, 2.5f) * 4.5;
         [[col colorWithAlphaComponent:0.25] setFill];
         [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(px - r - 6, py - r - 6, 2 * (r + 6), 2 * (r + 6))] fill];
-        [[col colorWithAlphaComponent:0.92] setFill];
+        [col setFill];
         [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(px - r, py - r, 2 * r, 2 * r)] fill];
     }
 }
 
 - (void)drawDelivered:(NSRect)r {
     RGController *c = self.c;
-    panel(r);
-    CGFloat x = r.origin.x + 14, y = r.origin.y;
-    text(@"macOS delivers", x, y + 14, [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], gray(0.92));
-    text(@"click events reaching apps", x, y + 33, [NSFont systemFontOfSize:10.5], gray(0.5));
-    NSRect left = NSMakeRect(x + 168, y + 18, 100, 34), right = NSMakeRect(x + 276, y + 18, 100, 34);
-    lamp(left, @"Left", c->evtDown[1]);
-    lamp(right, @"Right", c->evtDown[2]);
-    if (!c->tapOK && !c.snapshotPath)
-        centred(@"Unavailable: see Help", NSUnionRect(left, right), [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], RED);
-    CGFloat cx = x + 392, cw = NSMaxX(r) - 14 - cx;
-    double now = CFAbsoluteTimeGetCurrent();
-    if (c->lastDrop > 0 && now - c->lastDrop < 3) {
-        NSRect b = NSMakeRect(cx, y + 14, cw, 42);
-        [RED setFill];
-        [[NSBezierPath bezierPathWithRoundedRect:b xRadius:8 yRadius:8] fill];
-        centred([c->lastDropText ?: @"Click dropped" uppercaseString], b, [NSFont systemFontOfSize:12 weight:NSFontWeightBold], NSColor.whiteColor);
-        return;
-    }
+    RGDrawCard(r, 16);
+    CGFloat x = r.origin.x + 16, y = r.origin.y;
+    RGDrawText(@"macOS delivers", NSMakeRect(x, y + 16, 160, 20), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],
+               NSColor.labelColor, NSTextAlignmentLeft);
+    RGDrawText(@"Click events reaching apps", NSMakeRect(x, y + 38, 170, 16), [NSFont systemFontOfSize:11],
+               NSColor.secondaryLabelColor, NSTextAlignmentLeft);
+    NSRect left = NSMakeRect(x + 178, y + 20, 100, 32), right = NSMakeRect(x + 286, y + 20, 100, 32);
+    RGDrawLight(left, @"Left", c->evtDown[1], NSColor.systemGreenColor);
+    RGDrawLight(right, @"Right", c->evtDown[2], NSColor.systemGreenColor);
+    if (!c->tapOK && c.live)
+        RGDrawText(@"Unavailable: see Help", NSMakeRect(left.origin.x, y + 56, 210, 14), [NSFont systemFontOfSize:10 weight:NSFontWeightMedium],
+                   NSColor.systemRedColor, NSTextAlignmentCenter);
+    CGFloat cx = x + 404;
     NSFont *mono = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
-    text([NSString stringWithFormat:@"Delivered  L %ld  R %ld", c->delivered[1], c->delivered[2]], cx, y + 17, mono, gray(0.82));
+    text([NSString stringWithFormat:@"Delivered  L %ld  R %ld", c->delivered[1], c->delivered[2]], cx, y + 19, mono, NSColor.labelColor);
     text([NSString stringWithFormat:@"Remapped %ld · window %d ms", c->remappedTotal, (int)lround(c.matchWindow * 1000)],
-         cx, y + 36, mono, c->remappedTotal ? AMBER : gray(0.55));
+         cx, y + 39, mono, c->remappedTotal ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor);
 }
 
 - (void)drawLog:(NSRect)r {
     RGController *c = self.c;
-    [gray(0.12) setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:r xRadius:8 yRadius:8] fill];
+    RGDrawCard(r, 16);
     NSFont *f = [NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightRegular];
-    NSInteger maxLines = (NSInteger)((r.size.height - 12) / 13.5);
+    NSInteger maxLines = (NSInteger)((r.size.height - 18) / 13.5);
     NSInteger start = MAX(0, (NSInteger)c->lines.count - maxLines);
     for (NSInteger i = start; i < (NSInteger)c->lines.count; i++) {
         NSString *l = c->lines[i];
-        NSColor *col = [l containsString:@"✗"] ? RED : [l containsString:@"≠"] ? AMBER : [l containsString:@"✓"] ? gray(0.8) : gray(0.5);
-        textIn(l, NSMakeRect(r.origin.x + 10, r.origin.y + 7 + (i - start) * 13.5, r.size.width - 20, 14), f, col);
+        NSColor *col = [l containsString:@"✗"] ? NSColor.systemRedColor : [l containsString:@"≠"] ? NSColor.systemOrangeColor
+                     : [l containsString:@"✓"] ? NSColor.labelColor : NSColor.secondaryLabelColor;
+        RGDrawText(l, NSMakeRect(r.origin.x + 14, r.origin.y + 10 + (i - start) * 13.5, r.size.width - 28, 14), f, col, NSTextAlignmentLeft);
     }
+}
+
+#pragma mark Accessibility
+
+- (BOOL)isAccessibilityElement { return NO; }
+- (NSAccessibilityRole)accessibilityRole { return NSAccessibilityGroupRole; }
+- (NSString *)accessibilityLabel { return @"RodentGym dashboard"; }
+
+- (NSAccessibilityElement *)element:(NSString *)label frame:(NSRect)r {
+    NSRect screen = [self.window convertRectToScreen:[self convertRect:r toView:nil]];
+    NSAccessibilityElement *e = [NSAccessibilityElement accessibilityElementWithRole:NSAccessibilityGroupRole frame:screen label:label parent:self];
+    return e;
+}
+
+- (NSArray *)accessibilityChildren {
+    RGController *c = self.c;
+    NSMutableArray *a = [NSMutableArray arrayWithArray:[super accessibilityChildren] ?: @[]];
+    NSArray<RGDevice *> *devs = c.visibleDevices;
+    for (NSUInteger i = 0; i < devs.count; i++) {
+        RGDevice *d = devs[i];
+        NSString *label = [NSString stringWithFormat:@"%@, %@. Sending %@. %@. %@. Sent %ld left and %ld right clicks, dropped %ld.",
+                           d.name, d.model,
+                           d->hidDown[1] ? @"left" : d->hidDown[2] ? @"right" : @"nothing",
+                           [d.settingsLines componentsJoinedByString:@". "], [c colourTextFor:d],
+                           d->sent[1], d->sent[2], d->dropped[1] + d->dropped[2]];
+        [a addObject:[self element:label frame:[self cardRect:i]]];
+    }
+    [a addObject:[self element:[NSString stringWithFormat:@"macOS delivers: %@. %ld left and %ld right clicks delivered, %ld remapped.",
+                                c->evtDown[1] ? @"left down" : c->evtDown[2] ? @"right down" : @"no button down",
+                                c->delivered[1], c->delivered[2], c->remappedTotal] frame:self.deliveredRect]];
+    [a addObject:[self element:[@"Latest log entry: " stringByAppendingString:c->lines.lastObject ?: @"none"] frame:self.logRect]];
+    return a;
 }
 @end
 
 #pragma mark - Controller
 
+static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"trackpadSettings", *const kTBGame = @"cheeseStack",
+                *const kTBTrainer = @"gestureTrainer", *const kTBReset = @"resetCounters";
+
 @implementation RGController
 
 + (void)initialize {
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
-        kKeepOnTop: @YES, kShowBuiltIn: @NO, kDropSound: @YES, kLogAll: @YES, kMatchMs: @400, kFinishes: @{}}];
+        kKeepOnTop: @NO, kShowBuiltIn: @NO, kDropSound: @YES, kLogAll: @YES, kMatchMs: @400, kFinishes: @{}}];
 }
 
 - (double)matchWindow { return MAX(100, [NSUserDefaults.standardUserDefaults integerForKey:kMatchMs]) / 1000.0; }
@@ -707,14 +696,14 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     return a;
 }
 
-- (NSString *)finishNameFor:(RGDevice *)d {
+- (NSString *)finishOverrideFor:(RGDevice *)d {
     if (d->colorID < 0) return nil;
     return [NSUserDefaults.standardUserDefaults dictionaryForKey:kFinishes][[@(d->colorID) stringValue]];
 }
 
 // The colour code decides the drawing unless the user has overridden it in Settings.
 - (RGStyle)styleFor:(RGDevice *)d {
-    NSString *override = [self finishNameFor:d];
+    NSString *override = [self finishOverrideFor:d];
     if ([override isEqualToString:@"black"]) return kDarkStyle;
     if ([override isEqualToString:@"white"]) return kLightStyle;
     const RGColour *c = colourForCode(d->colorID);
@@ -723,7 +712,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 
 - (NSString *)colourTextFor:(RGDevice *)d {
     if (d->colorID < 0) return @"Colour: not reported by the device";
-    NSString *override = [self finishNameFor:d];
+    NSString *override = [self finishOverrideFor:d];
     if (override) return [NSString stringWithFormat:@"Colour: %@ (set in Settings; code %d)",
                           [override isEqualToString:@"black"] ? @"black / space grey" : @"white / silver", d->colorID];
     const RGColour *c = colourForCode(d->colorID);
@@ -731,18 +720,25 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
              : [NSString stringWithFormat:@"Colour code %d · unknown, set it in Settings", d->colorID];
 }
 
+// Height of the toolbar area the content must stay clear of (the window uses full-size content).
+- (CGFloat)topInset {
+    if (!self.window) return 0;
+    NSRect content = [self.window contentRectForFrameRect:self.window.frame];
+    return MAX(0, content.size.height - self.window.contentLayoutRect.size.height);
+}
+
 #pragma mark Lifecycle
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     lines = [NSMutableArray array];
+    self.live = !self.snapshotPath && !self.demo;
     self.hidCache = [NSMutableDictionary dictionary];
     self.lastSecondary = [NSMutableDictionary dictionary];
     self.shortFmt = [NSDateFormatter new];
     self.shortFmt.dateFormat = @"HH:mm:ss";
     self.longFmt = [NSDateFormatter new];
     self.longFmt.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
-    NSApp.applicationIconImage = appIcon(512);
-    if (!self.snapshotPath) [self openLogFile];
+    if (self.live) [self openLogFile];
     [self buildMenu];
     [self buildWindow];
     [self rescanDevices:nil];
@@ -753,20 +749,31 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
         [self performSelector:@selector(writeSnapshot) withObject:nil afterDelay:1.0];
         return;
     }
-    [self setupHID];
-    [self setupTap];
-    [self watchDevices];
-    [self updateStatus];
+    if (self.demo) {
+        [self injectDemoState];
+        NSArray *args = NSProcessInfo.processInfo.arguments;
+        if ([args containsObject:@"--demo-trainer"]) { self.trainer = [RGGestureTrainer new]; [self.trainer showDemo]; }
+        if ([args containsObject:@"--demo-game"]) { [self showGame:nil]; [self.game showDemo]; }
+    } else {
+        [self setupHID];
+        [self setupTap];
+        [self watchDevices];
+        [self updateStatus];
+        [self log:[NSString stringWithFormat:@"· %@ %@ started: button reports %@, click events %@ | %@", APP_NAME, APP_VERSION,
+                   hidOK ? @"ok" : @"unavailable", tapOK ? @"ok" : @"unavailable", statusLine]];
+        NSArray *args = NSProcessInfo.processInfo.arguments;   // open the Gym straight away, e.g. from a shortcut
+        if ([args containsObject:@"--show-trainer"]) [self showTrainer:nil];
+        if ([args containsObject:@"--show-game"]) [self showGame:self];
+    }
     NSTimer *draw = [NSTimer timerWithTimeInterval:1.0 / 30 target:self selector:@selector(tick) userInfo:nil repeats:YES];
     NSTimer *status = [NSTimer timerWithTimeInterval:1.0 target:self selector:@selector(updateStatus) userInfo:nil repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:draw forMode:NSRunLoopCommonModes];
-    [NSRunLoop.mainRunLoop addTimer:status forMode:NSRunLoopCommonModes];
-    [self log:[NSString stringWithFormat:@"· %@ %@ started: button reports %@, click events %@ | %@", APP_NAME, APP_VERSION,
-               hidOK ? @"ok" : @"unavailable", tapOK ? @"ok" : @"unavailable", statusLine]];
+    if (self.live) [NSRunLoop.mainRunLoop addTimer:status forMode:NSRunLoopCommonModes];
     [self activate];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app { return YES; }
+- (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)app { return YES; }
 
 - (void)activate {
     if (@available(macOS 14, *)) [NSApp activate];
@@ -775,7 +782,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 
 - (void)openLogFile {
     NSFileManager *fm = NSFileManager.defaultManager;
-    if (![fm fileExistsAtPath:LOG_PATH]) [fm createFileAtPath:LOG_PATH contents:nil attributes:nil];
+    if (![fm fileExistsAtPath:LOG_PATH]) [fm createFileAtPath:LOG_PATH contents:nil attributes:@{NSFilePosixPermissions: @0600}];
     self.logFile = [NSFileHandle fileHandleForWritingAtPath:LOG_PATH];
     [self.logFile seekToEndOfFile];
 }
@@ -789,7 +796,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     self.view.needsDisplay = YES;
 }
 
-#pragma mark Menus and windows
+#pragma mark Menus
 
 - (NSMenu *)addMenu:(NSString *)title to:(NSMenu *)bar {
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
@@ -799,55 +806,86 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     return m;
 }
 
+- (NSMenuItem *)add:(NSMenu *)menu title:(NSString *)title action:(SEL)action key:(NSString *)key
+          modifiers:(NSEventModifierFlags)mods symbol:(NSString *)symbol {
+    NSMenuItem *i = [menu addItemWithTitle:title action:action keyEquivalent:key];
+    if (mods) i.keyEquivalentModifierMask = mods;
+    if (symbol) i.image = RGSymbol(symbol, title);
+    return i;
+}
+
 - (void)buildMenu {
     NSMenu *bar = [NSMenu new];
-    NSEventModifierFlags cmdShift = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    NSEventModifierFlags cmd = NSEventModifierFlagCommand, cmdShift = cmd | NSEventModifierFlagShift;
 
     NSMenu *app = [self addMenu:APP_NAME to:bar];
-    [app addItemWithTitle:@"About RodentGym" action:@selector(showAbout:) keyEquivalent:@""];
+    [self add:app title:@"About RodentGym" action:@selector(showAbout:) key:@"" modifiers:0 symbol:@"info.circle"];
     [app addItem:NSMenuItem.separatorItem];
-    [app addItemWithTitle:@"Settings…" action:@selector(showSettings:) keyEquivalent:@","];
+    [self add:app title:@"Settings…" action:@selector(showSettings:) key:@"," modifiers:0 symbol:@"gearshape"];
     [app addItem:NSMenuItem.separatorItem];
-    [app addItemWithTitle:@"Hide RodentGym" action:@selector(hide:) keyEquivalent:@"h"];
-    [app addItemWithTitle:@"Quit RodentGym" action:@selector(terminate:) keyEquivalent:@"q"];
+    NSMenuItem *services = [app addItemWithTitle:@"Services" action:nil keyEquivalent:@""];
+    services.submenu = [[NSMenu alloc] initWithTitle:@"Services"];
+    NSApp.servicesMenu = services.submenu;
+    [app addItem:NSMenuItem.separatorItem];
+    [self add:app title:@"Hide RodentGym" action:@selector(hide:) key:@"h" modifiers:0 symbol:nil];
+    [self add:app title:@"Hide Others" action:@selector(hideOtherApplications:) key:@"h" modifiers:cmd | NSEventModifierFlagOption symbol:nil];
+    [self add:app title:@"Show All" action:@selector(unhideAllApplications:) key:@"" modifiers:0 symbol:nil];
+    [app addItem:NSMenuItem.separatorItem];
+    [self add:app title:@"Quit RodentGym" action:@selector(terminate:) key:@"q" modifiers:0 symbol:nil];
+
+    NSMenu *file = [self addMenu:@"File" to:bar];
+    [self add:file title:@"Close" action:@selector(performClose:) key:@"w" modifiers:0 symbol:@"xmark"];
 
     NSMenu *edit = [self addMenu:@"Edit" to:bar];
-    [edit addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
-    [edit addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+    [self add:edit title:@"Copy" action:@selector(copy:) key:@"c" modifiers:0 symbol:@"doc.on.doc"];
+    [self add:edit title:@"Select All" action:@selector(selectAll:) key:@"a" modifiers:0 symbol:nil];
 
     NSMenu *dev = [self addMenu:@"Devices" to:bar];
-    [dev addItemWithTitle:@"Open Mouse Settings" action:@selector(openMouseSettings:) keyEquivalent:@"m"].keyEquivalentModifierMask = cmdShift;
-    [dev addItemWithTitle:@"Open Trackpad Settings" action:@selector(openTrackpadSettings:) keyEquivalent:@"t"].keyEquivalentModifierMask = cmdShift;
+    [self add:dev title:@"Open Mouse Settings" action:@selector(openMouseSettings:) key:@"m" modifiers:cmdShift symbol:@"computermouse"];
+    [self add:dev title:@"Open Trackpad Settings" action:@selector(openTrackpadSettings:) key:@"t" modifiers:cmdShift
+       symbol:@"rectangle.and.hand.point.up.left"];
     [dev addItem:NSMenuItem.separatorItem];
-    [dev addItemWithTitle:@"Rescan Devices" action:@selector(rescanDevices:) keyEquivalent:@"r"].keyEquivalentModifierMask = cmdShift;
-    [dev addItemWithTitle:@"Reset Counters" action:@selector(resetCounters:) keyEquivalent:@"k"];
-    [dev addItemWithTitle:@"Open Log File" action:@selector(openLog:) keyEquivalent:@"l"];
+    [self add:dev title:@"Rescan Devices" action:@selector(rescanDevices:) key:@"r" modifiers:cmdShift symbol:@"arrow.triangle.2.circlepath"];
+    [self add:dev title:@"Reset Counters" action:@selector(resetCounters:) key:@"k" modifiers:0 symbol:@"arrow.counterclockwise"];
+    [dev addItem:NSMenuItem.separatorItem];
+    [self add:dev title:@"Open Log File" action:@selector(openLog:) key:@"l" modifiers:0 symbol:@"doc.text"];
 
     NSMenu *gym = [self addMenu:@"Gym" to:bar];
-    [gym addItemWithTitle:@"Cheese Stack" action:@selector(showGame:) keyEquivalent:@"g"];
+    [self add:gym title:@"Cheese Stack" action:@selector(showGame:) key:@"g" modifiers:0 symbol:@"gamecontroller"];
+    [self add:gym title:@"Gesture Trainer" action:@selector(showTrainer:) key:@"t" modifiers:0 symbol:@"hand.draw"];
 
     NSMenu *win = [self addMenu:@"Window" to:bar];
-    [win addItemWithTitle:@"Minimise" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
-    [win addItemWithTitle:@"Close" action:@selector(performClose:) keyEquivalent:@"w"];
+    [self add:win title:@"Minimise" action:@selector(performMiniaturize:) key:@"m" modifiers:0 symbol:nil];
+    [self add:win title:@"Zoom" action:@selector(performZoom:) key:@"" modifiers:0 symbol:nil];
+    [win addItem:NSMenuItem.separatorItem];
+    [self add:win title:@"Bring All to Front" action:@selector(arrangeInFront:) key:@"" modifiers:0 symbol:nil];
     NSApp.windowsMenu = win;
 
     NSMenu *help = [self addMenu:@"Help" to:bar];
-    [help addItemWithTitle:@"RodentGym Help" action:@selector(showHelp:) keyEquivalent:@"?"];
+    [self add:help title:@"RodentGym Help" action:@selector(showHelp:) key:@"?" modifiers:0 symbol:@"questionmark.circle"];
     NSApp.helpMenu = help;
     NSApp.mainMenu = bar;
 }
 
+#pragma mark Window, toolbar and toast
+
 - (void)buildWindow {
-    NSRect frame = NSMakeRect(0, 0, 648, 760);
+    NSRect frame = NSMakeRect(0, 0, 660, 760);
     self.window = [[NSWindow alloc] initWithContentRect:frame
-        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskFullSizeContentView
         backing:NSBackingStoreBuffered defer:NO];
     self.window.title = APP_NAME;
-    self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     self.window.releasedWhenClosed = NO;
+    self.window.tabbingMode = NSWindowTabbingModeDisallowed;
+    NSToolbar *toolbar = [[NSToolbar alloc] initWithIdentifier:@"RodentGymToolbar"];
+    toolbar.delegate = self;
+    toolbar.displayMode = NSToolbarDisplayModeIconOnly;
+    if (!self.snapshotPath) self.window.toolbar = toolbar;   // offscreen renders have no chrome to show
+    self.window.toolbarStyle = NSWindowToolbarStyleUnified;
     self.view = [[RGView alloc] initWithFrame:frame];
     self.view.c = self;
     self.window.contentView = self.view;
+    [self buildToast];
     [self applyWindowLevel];
     if (self.snapshotPath) {
         [self.window setFrameOrigin:NSMakePoint(-10000, -10000)];
@@ -858,47 +896,102 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     }
 }
 
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar {
+    return @[kTBMouse, kTBTrackpad, NSToolbarFlexibleSpaceItemIdentifier, kTBGame, kTBTrainer, NSToolbarSpaceItemIdentifier, kTBReset];
+}
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar {
+    return [[self toolbarDefaultItemIdentifiers:toolbar] arrayByAddingObject:NSToolbarSpaceItemIdentifier];
+}
+
+- (NSToolbarItem *)toolbar:(NSToolbar *)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)ident willBeInsertedIntoToolbar:(BOOL)flag {
+    NSArray<NSString *> *spec = @{
+        kTBMouse:    @[@"Mouse Settings", @"computermouse", @"Open Mouse settings", @"openMouseSettings:"],
+        kTBTrackpad: @[@"Trackpad Settings", @"rectangle.and.hand.point.up.left", @"Open Trackpad settings", @"openTrackpadSettings:"],
+        kTBGame:     @[@"Cheese Stack", @"gamecontroller", @"Play Cheese Stack, a click workout", @"showGame:"],
+        kTBTrainer:  @[@"Gesture Trainer", @"hand.draw", @"Practise every gesture you have switched on", @"showTrainer:"],
+        kTBReset:    @[@"Reset Counters", @"arrow.counterclockwise", @"Reset the click counters", @"resetCounters:"]}[ident];
+    if (!spec) return nil;
+    NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:ident];
+    item.label = spec[0];
+    item.paletteLabel = spec[0];
+    item.image = RGSymbol(spec[1], spec[0]);
+    item.toolTip = spec[2];
+    item.target = self;
+    item.action = NSSelectorFromString(spec[3]);
+    item.bordered = YES;
+    return item;
+}
+
+// A Liquid Glass toast that floats under the toolbar when a click is dropped.
+- (void)buildToast {
+    NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 320, 44)];
+    NSImageView *icon = [NSImageView imageViewWithImage:RGSymbol(@"exclamationmark.triangle.fill", @"Warning") ?: [NSImage new]];
+    icon.frame = NSMakeRect(16, 11, 22, 22);
+    icon.contentTintColor = NSColor.systemRedColor;
+    icon.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:16 weight:NSFontWeightSemibold];
+    self.toastLabel = RGLabel(@"", [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], NSColor.labelColor);
+    self.toastLabel.frame = NSMakeRect(46, 13, 260, 18);
+    [content addSubview:icon];
+    [content addSubview:self.toastLabel];
+    self.toast = RGGlassView(content, 22);
+    RGSetGlassTint(self.toast, [NSColor.systemRedColor colorWithAlphaComponent:0.22]);
+    self.toast.alphaValue = 0;
+    self.toast.hidden = YES;
+    self.toast.accessibilityElement = YES;
+    self.toast.accessibilityRole = NSAccessibilityStaticTextRole;   // attached to the window only while showing
+}
+
+- (void)positionToast {
+    NSRect b = self.view.bounds;
+    self.toast.frame = NSMakeRect(round((b.size.width - 320) / 2), self.topInset + 8, 320, 44);
+}
+
+- (void)showToast:(NSString *)message {
+    self.toastLabel.stringValue = message;
+    self.toast.accessibilityLabel = message;
+    if (!self.toast.superview) [self.view addSubview:self.toast];
+    [self positionToast];
+    self.toast.hidden = NO;
+    NSAccessibilityPostNotificationWithUserInfo(self.toast, NSAccessibilityAnnouncementRequestedNotification,
+        @{NSAccessibilityAnnouncementKey: message, NSAccessibilityPriorityKey: @(NSAccessibilityPriorityHigh)});
+    if (RGReduceMotion()) self.toast.alphaValue = 1;
+    else [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) { ctx.duration = 0.2; self.toast.animator.alphaValue = 1; }];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(hideToast) object:nil];
+    [self performSelector:@selector(hideToast) withObject:nil afterDelay:3.0];
+}
+
+- (void)hideToast {
+    if (RGReduceMotion()) { self.toast.alphaValue = 0; self.toast.hidden = YES; [self.toast removeFromSuperview]; return; }
+    [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) { ctx.duration = 0.35; self.toast.animator.alphaValue = 0; }
+                        completionHandler:^{ self.toast.hidden = YES; [self.toast removeFromSuperview]; }];
+}
+
 - (void)applyWindowLevel {
     NSWindowLevel level = [NSUserDefaults.standardUserDefaults boolForKey:kKeepOnTop] ? NSFloatingWindowLevel : NSNormalWindowLevel;
-    for (NSWindow *w in NSApp.windows) w.level = level;   // keep About, Settings and Help above the main window too
+    for (NSWindow *w in NSApp.windows) w.level = level;   // keep About, Settings, Help and the Gym above the main window too
     self.window.level = level;
 }
 
 - (void)relayout {
     NSUInteger n = MAX(1, self.visibleDevices.count);
-    CGFloat w = MAX(648, n * CARD_W + (n + 1) * MARGIN);
-    CGFloat h = TOOLBAR_H + CARD_H + MARGIN + DELIVER_H + STATUS_H + LOG_H + MARGIN;
+    CGFloat w = MAX(660, n * CARD_W + (n + 1) * MARGIN);
+    CGFloat h = self.topInset + 12 + CARD_H + MARGIN + DELIVER_H + MARGIN + LOG_H + MARGIN;
     NSRect old = self.window.frame;
     NSRect frame = [self.window frameRectForContentRect:NSMakeRect(0, 0, w, h)];
     frame.origin = NSMakePoint(old.origin.x, NSMaxY(old) - frame.size.height);
     [self.window setFrame:frame display:YES];
-    self.view.frame = NSMakeRect(0, 0, w, h);
-    [self buildToolbar];
+    // The toolbar height is only final once the window has its size; recompute once.
+    CGFloat h2 = self.topInset + 12 + CARD_H + MARGIN + DELIVER_H + MARGIN + LOG_H + MARGIN;
+    if (fabs(h2 - h) > 0.5) {
+        frame = [self.window frameRectForContentRect:NSMakeRect(0, 0, w, h2)];
+        frame.origin = NSMakePoint(old.origin.x, NSMaxY(old) - frame.size.height);
+        [self.window setFrame:frame display:YES];
+    }
+    [self positionToast];
     self.view.needsDisplay = YES;
 }
 
-- (void)buildToolbar {
-    for (NSView *v in [self.view.subviews copy]) [v removeFromSuperview];
-    CGFloat x = MARGIN;
-    NSArray *specs = @[@[@"Mouse Settings…", @"openMouseSettings:"], @[@"Trackpad Settings…", @"openTrackpadSettings:"],
-                       @[@"Cheese Stack 🧀", @"showGame:"], @[@"RodentGym Settings…", @"showSettings:"]];
-    for (NSArray *spec in specs) {
-        NSButton *b = [NSButton buttonWithTitle:spec[0] target:self action:NSSelectorFromString(spec[1])];
-        b.bezelStyle = NSBezelStylePush;
-        b.controlSize = NSControlSizeSmall;
-        b.font = [NSFont systemFontOfSize:11];
-        [b sizeToFit];
-        b.frame = NSMakeRect(x, 12, b.frame.size.width, 24);
-        x += b.frame.size.width + 4;
-        [self.view addSubview:b];
-    }
-    NSButton *help = [[NSButton alloc] initWithFrame:NSMakeRect(self.view.bounds.size.width - MARGIN - 23, 12, 23, 23)];
-    help.bezelStyle = NSBezelStyleHelpButton;
-    help.title = @"";
-    help.target = self;
-    help.action = @selector(showHelp:);
-    [self.view addSubview:help];
-}
+#pragma mark Actions
 
 - (void)openMouseSettings:(id)sender {
     [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.Mouse-Settings.extension"]];
@@ -931,11 +1024,29 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
         self.game.inputWarning = ^NSString * {
             for (RGDevice *d in weakSelf.devices)
                 if (d->kind == RGKindMouse && d.secondaryZone == 0)
-                    return [NSString stringWithFormat:@"Secondary click is off on %@, so right-clicks arrive as left. Turn it on with Mouse Settings… (⇧⌘M).", d.name];
+                    return [NSString stringWithFormat:@"Secondary click is off on %@, so right-clicks arrive as left. Turn it on in Mouse Settings (⇧⌘M).", d.name];
             return nil;
         };
     }
-    [self.game show];
+    if (sender) [self.game show];
+    [self applyWindowLevel];
+    [self activate];
+}
+
+- (void)showTrainer:(id)sender {
+    if (!self.trainer) {
+        self.trainer = [RGGestureTrainer new];
+        __weak RGController *weakSelf = self;
+        self.trainer.devices = ^NSArray<NSDictionary *> * {
+            NSMutableArray *a = [NSMutableArray array];
+            for (RGDevice *d in weakSelf.visibleDevices)
+                [a addObject:@{@"name": d.name, @"kind": d->kind == RGKindMouse ? @"mouse" : @"trackpad",
+                               @"slot": @(d->slot), @"prefs": d.prefs ?: @{}}];
+            return a;
+        };
+        self.trainer.log = ^(NSString *line) { [weakSelf log:line]; };
+    }
+    [self.trainer show];
     [self applyWindowLevel];
     [self activate];
 }
@@ -961,19 +1072,21 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
             backing:NSBackingStoreBuffered defer:NO];
         self.helpWindow.title = @"RodentGym Help";
         self.helpWindow.releasedWhenClosed = NO;
+        self.helpWindow.tabbingMode = NSWindowTabbingModeDisallowed;
         self.helpWindow.contentMinSize = NSMakeSize(420, 300);
         NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 660, 760)];
         scroll.hasVerticalScroller = YES;
         scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         NSTextView *tv = [[NSTextView alloc] initWithFrame:scroll.bounds];
         tv.editable = NO;
-        tv.textContainerInset = NSMakeSize(26, 22);
+        tv.textContainerInset = NSMakeSize(28, 24);
         tv.autoresizingMask = NSViewWidthSizable;
         tv.backgroundColor = NSColor.textBackgroundColor;
         [tv.textStorage setAttributedString:[self helpText]];
         scroll.documentView = tv;
         self.helpWindow.contentView = scroll;
         [self.helpWindow center];
+        [self.helpWindow setFrameAutosaveName:@"RodentGymHelp"];
     }
     [self.helpWindow makeKeyAndOrderFront:nil];
     [self applyWindowLevel];
@@ -993,34 +1106,29 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
         if (attrs[NSLinkAttributeName]) return;
         NSColor *c = [attrs[NSForegroundColorAttributeName] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
         CGFloat r = c ? c.redComponent : 0, g = c ? c.greenComponent : 0, b = c ? c.blueComponent : 0;
-        BOOL grey = fabs(r - g) < 0.05 && fabs(g - b) < 0.05;
-        if (!c || (grey && r < 0.25)) [s addAttribute:NSForegroundColorAttributeName value:NSColor.labelColor range:range];
-        else if (grey) [s addAttribute:NSForegroundColorAttributeName value:NSColor.secondaryLabelColor range:range];
+        BOOL greyText = fabs(r - g) < 0.05 && fabs(g - b) < 0.05;
+        if (!c || (greyText && r < 0.25)) [s addAttribute:NSForegroundColorAttributeName value:NSColor.labelColor range:range];
+        else if (greyText) [s addAttribute:NSForegroundColorAttributeName value:NSColor.secondaryLabelColor range:range];
     }];
     return s;
 }
 
 #pragma mark Settings window
 
-- (NSTextField *)heading:(NSString *)s {
-    NSTextField *t = [NSTextField labelWithString:s];
-    t.font = [NSFont boldSystemFontOfSize:13];
-    return t;
-}
-
-- (NSTextField *)note:(NSString *)s {
-    NSTextField *t = [NSTextField wrappingLabelWithString:s];
-    t.font = [NSFont systemFontOfSize:11];
-    t.textColor = NSColor.secondaryLabelColor;
-    [t.widthAnchor constraintEqualToConstant:410].active = YES;
-    return t;
-}
-
 - (NSButton *)checkbox:(NSString *)title key:(NSString *)key {
     NSButton *b = [NSButton checkboxWithTitle:title target:self action:@selector(toggleSetting:)];
     b.identifier = key;
     b.state = [NSUserDefaults.standardUserDefaults boolForKey:key] ? NSControlStateValueOn : NSControlStateValueOff;
     return b;
+}
+
+- (NSTextField *)note:(NSString *)s width:(CGFloat)w {
+    NSTextField *t = [NSTextField wrappingLabelWithString:s];
+    t.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+    t.textColor = NSColor.secondaryLabelColor;
+    t.preferredMaxLayoutWidth = w;
+    [t.widthAnchor constraintEqualToConstant:w].active = YES;
+    return t;
 }
 
 - (void)toggleSetting:(NSButton *)b {
@@ -1030,8 +1138,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 }
 
 - (void)updateMatchLabel {
-    self.matchLabel.stringValue = [NSString stringWithFormat:@"Drop detection window: %ld ms",
-                                   (long)[NSUserDefaults.standardUserDefaults integerForKey:kMatchMs]];
+    self.matchLabel.stringValue = [NSString stringWithFormat:@"%ld ms", (long)[NSUserDefaults.standardUserDefaults integerForKey:kMatchMs]];
 }
 
 - (void)matchChanged:(NSSlider *)s {
@@ -1049,34 +1156,40 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     self.view.needsDisplay = YES;
 }
 
+- (NSTextField *)formLabel:(NSString *)s {
+    NSTextField *t = [NSTextField labelWithString:s];
+    t.alignment = NSTextAlignmentRight;
+    return t;
+}
+
+// A standard two-column settings form: right-aligned labels, controls aligned on a common leading edge.
 - (void)showSettings:(id)sender {
     NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
-    NSStackView *stack = [NSStackView stackViewWithViews:@[]];
-    stack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    stack.alignment = NSLayoutAttributeLeading;
-    stack.spacing = 9;
-    stack.edgeInsets = NSEdgeInsetsMake(20, 24, 22, 24);
+    NSGridView *grid = [NSGridView gridViewWithNumberOfColumns:2 rows:0];
+    grid.rowSpacing = 8;
+    grid.columnSpacing = 10;
+    [grid addRowWithViews:@[[self formLabel:@"Window:"], [self checkbox:@"Keep RodentGym above other windows" key:kKeepOnTop]]];
+    [grid addRowWithViews:@[[NSGridCell emptyContentView], [self checkbox:@"Show the built-in trackpad" key:kShowBuiltIn]]];
 
-    [stack addArrangedSubview:[self heading:@"Window"]];
-    [stack addArrangedSubview:[self checkbox:@"Keep RodentGym on top of other windows" key:kKeepOnTop]];
-    [stack addArrangedSubview:[self checkbox:@"Show the built-in trackpad" key:kShowBuiltIn]];
-
-    [stack addArrangedSubview:[self heading:@"Detection"]];
-    [stack addArrangedSubview:[self checkbox:@"Play a sound when a click is dropped" key:kDropSound]];
-    [stack addArrangedSubview:[self checkbox:@"Log every click, not just problems" key:kLogAll]];
-    self.matchLabel = [NSTextField labelWithString:@""];
-    [self updateMatchLabel];
-    [stack addArrangedSubview:self.matchLabel];
-    NSSlider *slider = [NSSlider sliderWithValue:[ud integerForKey:kMatchMs] minValue:150 maxValue:1000
-                                          target:self action:@selector(matchChanged:)];
+    NSGridRow *spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
+    spacer.height = 6;
+    [grid addRowWithViews:@[[self formLabel:@"Dropped clicks:"], [self checkbox:@"Play a sound" key:kDropSound]]];
+    [grid addRowWithViews:@[[NSGridCell emptyContentView], [self checkbox:@"Log every click, not just problems" key:kLogAll]]];
+    NSSlider *slider = [NSSlider sliderWithValue:[ud integerForKey:kMatchMs] minValue:150 maxValue:1000 target:self action:@selector(matchChanged:)];
     slider.numberOfTickMarks = 18;
     slider.allowsTickMarkValuesOnly = YES;
-    [slider.widthAnchor constraintEqualToConstant:410].active = YES;
-    [stack addArrangedSubview:slider];
-    [stack addArrangedSubview:[self note:@"How long RodentGym waits for macOS to deliver a click the hardware reported before calling it dropped. Raise it if you see false drops while the Mac is very busy."]];
+    slider.accessibilityLabel = @"Drop detection window";
+    [slider.widthAnchor constraintEqualToConstant:240].active = YES;
+    self.matchLabel = [NSTextField labelWithString:@""];
+    self.matchLabel.font = [NSFont monospacedDigitSystemFontOfSize:NSFont.systemFontSize weight:NSFontWeightRegular];
+    [self updateMatchLabel];
+    NSStackView *sliderRow = [NSStackView stackViewWithViews:@[slider, self.matchLabel]];
+    [grid addRowWithViews:@[[self formLabel:@"Detection window:"], sliderRow]];
+    [grid addRowWithViews:@[[NSGridCell emptyContentView],
+                            [self note:@"How long to wait for macOS to deliver a click the hardware reported before calling it dropped. Raise it if you see false drops while the Mac is very busy." width:320]]];
 
-    [stack addArrangedSubview:[self heading:@"Device colours"]];
-    [stack addArrangedSubview:[self note:@"Each accessory reports a colour code, and RodentGym decodes it automatically. If a device is drawn in the wrong finish, override it here. The choice applies to every device with that code."]];
+    spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
+    spacer.height = 6;
     NSMutableDictionary<NSNumber *, NSMutableArray *> *codes = [NSMutableDictionary dictionary];
     for (RGDevice *d in self.devices) {
         if (d->colorID < 0) continue;
@@ -1084,13 +1197,10 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
         [codes[@(d->colorID)] addObject:d.name];
     }
     NSDictionary *finishes = [ud dictionaryForKey:kFinishes];
+    BOOL first = YES;
     for (NSNumber *code in [codes.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
-        NSTextField *label = [NSTextField labelWithString:[NSString stringWithFormat:@"Code %@ — %@", code,
-                                                           [codes[code] componentsJoinedByString:@", "]]];
-        label.lineBreakMode = NSLineBreakByTruncatingTail;
-        [label.widthAnchor constraintEqualToConstant:230].active = YES;
-        NSPopUpButton *p = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
         const RGColour *known = colourForCode(code.intValue);
+        NSPopUpButton *p = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
         [p addItemsWithTitles:@[known ? [NSString stringWithFormat:@"Automatic (%@)", known->name] : @"Automatic (unknown)",
                                 @"White / silver", @"Black / space grey"]];
         p.identifier = code.stringValue;
@@ -1098,25 +1208,45 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
         [p selectItemAtIndex:[cur isEqualToString:@"white"] ? 1 : [cur isEqualToString:@"black"] ? 2 : 0];
         p.target = self;
         p.action = @selector(colourChanged:);
-        NSStackView *row = [NSStackView stackViewWithViews:@[label, p]];
-        row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-        [stack addArrangedSubview:row];
+        p.accessibilityLabel = [NSString stringWithFormat:@"Finish for colour code %@", code];
+        NSTextField *names = [NSTextField labelWithString:[codes[code] componentsJoinedByString:@", "]];
+        names.textColor = NSColor.secondaryLabelColor;
+        names.lineBreakMode = NSLineBreakByTruncatingTail;
+        [names.widthAnchor constraintLessThanOrEqualToConstant:150].active = YES;
+        [grid addRowWithViews:@[[self formLabel:first ? @"Device colours:" : @""], [NSStackView stackViewWithViews:@[p, names]]]];
+        first = NO;
     }
-    if (codes.count == 0) [stack addArrangedSubview:[self note:@"No connected device reports a colour code."]];
+    if (codes.count == 0) [grid addRowWithViews:@[[self formLabel:@"Device colours:"], [self note:@"No connected device reports a colour code." width:320]]];
 
-    [stack addArrangedSubview:[self heading:@"Log"]];
-    [stack addArrangedSubview:[self note:[@"Clicks and problems are written to " stringByAppendingString:[LOG_PATH stringByAbbreviatingWithTildeInPath]]]];
-    [stack addArrangedSubview:[NSButton buttonWithTitle:@"Show Log in Finder" target:self action:@selector(revealLog:)]];
+    spacer = [grid addRowWithViews:@[[NSGridCell emptyContentView], [NSGridCell emptyContentView]]];
+    spacer.height = 6;
+    NSButton *reveal = [NSButton buttonWithTitle:@"Show in Finder" target:self action:@selector(revealLog:)];
+    [grid addRowWithViews:@[[self formLabel:@"Log:"], [NSStackView stackViewWithViews:@[
+        [NSTextField labelWithString:[LOG_PATH stringByAbbreviatingWithTildeInPath]], reveal]]]];
+
+    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
+    grid.rowAlignment = NSGridRowAlignmentFirstBaseline;
+
+    NSView *container = [NSView new];
+    grid.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:grid];
+    [NSLayoutConstraint activateConstraints:@[
+        [grid.topAnchor constraintEqualToAnchor:container.topAnchor constant:22],
+        [grid.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-22],
+        [grid.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:30],
+        [grid.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-30]]];
 
     if (!self.settingsWindow) {
-        self.settingsWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 460, 500)
+        self.settingsWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 400)
             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
         self.settingsWindow.title = @"RodentGym Settings";
         self.settingsWindow.releasedWhenClosed = NO;
+        self.settingsWindow.tabbingMode = NSWindowTabbingModeDisallowed;
         [self.settingsWindow center];
     }
-    self.settingsWindow.contentView = stack;
-    [self.settingsWindow setContentSize:stack.fittingSize];
+    self.settingsWindow.contentView = container;
+    [container layoutSubtreeIfNeeded];
+    [self.settingsWindow setContentSize:container.fittingSize];
     [self.settingsWindow makeKeyAndOrderFront:nil];
     [self applyWindowLevel];
     [self activate];
@@ -1150,7 +1280,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 }
 
 - (void)rescanDevices:(id)sender {
-    if (!self.snapshotPath)
+    if (self.live)
         for (RGDevice *d in self.devices) {
             MTUnregisterContactFrameCallback(d->mt, contactCallback);
             MTDeviceStop(d->mt);
@@ -1179,7 +1309,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
         d->slot = (int)i;
         [self describe:d];
         [found addObject:d];
-        if (!self.snapshotPath) {
+        if (self.live) {
             MTRegisterContactFrameCallback(d->mt, contactCallback);
             MTDeviceStart(d->mt, 0);
         }
@@ -1193,8 +1323,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     NSMutableArray *names = [NSMutableArray array];
     for (RGDevice *d in found)
         [names addObject:[NSString stringWithFormat:@"%@ (%@%@)", d.name, d.model, d.firmware ? [@", firmware " stringByAppendingString:d.firmware] : @""]];
-    if (!self.snapshotPath)
-        [self log:[@"· Devices: " stringByAppendingString:names.count ? [names componentsJoinedByString:@"; "] : @"none"]];
+    if (self.live) [self log:[@"· Devices: " stringByAppendingString:names.count ? [names componentsJoinedByString:@"; "] : @"none"]];
 }
 
 - (void)refreshBatteryAndColour {
@@ -1284,7 +1413,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 
 - (RGDevice *)touchedDevice {
     MTFinger t[MAX_TOUCHES];
-    for (RGDevice *d in self.devices) if (copyTouches(d->slot, t) > 0) return d;
+    for (RGDevice *d in self.devices) if (RGCopyTouches(d->slot, t) > 0) return d;
     return nil;
 }
 
@@ -1340,8 +1469,8 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
             if (d) d->dropped[b]++;
             totalDrops++;
             lastDrop = now;
-            lastDropText = [NSString stringWithFormat:@"%@ click dropped", kButtonName[b]];
             if ([NSUserDefaults.standardUserDefaults boolForKey:kDropSound]) [[NSSound soundNamed:@"Basso"] play];
+            [self showToast:[NSString stringWithFormat:@"%@ click dropped by macOS", kButtonName[b]]];
             [self log:[NSString stringWithFormat:@"✗ DROPPED %@ click: %@ sent it, macOS delivered nothing | %@%@",
                        kButtonName[b].lowercaseString, hidPendingName[b] ?: @"unknown device",
                        d ? [NSString stringWithFormat:@"secondary click: %@ | ", d.secondaryDescription] : @"", statusLine]];
@@ -1358,6 +1487,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     self.view.needsDisplay = YES;
 }
 
+// Memory state goes in the window subtitle and on every dropped-click log line.
 - (void)updateStatus {
     struct xsw_usage sw = {0};
     size_t len = sizeof(sw);
@@ -1367,15 +1497,18 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     sysctlbyname("kern.memorystatus_level", &level, &len, NULL, 0);
     len = sizeof(pressure);
     sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &len, NULL, 0);
-    NSString *p = pressure >= 4 ? @"CRITICAL" : pressure >= 2 ? @"warning" : @"normal";
-    statusLine = [NSString stringWithFormat:@"Memory free %d%% · pressure %@ · swap used %.1f GB · button reports %@ · click events %@",
-                  level, p, sw.xsu_used / 1073741824.0, hidOK ? @"ok" : @"off", tapOK ? @"ok" : @"off"];
+    NSString *p = pressure >= 4 ? @"critical" : pressure >= 2 ? @"warning" : @"normal";
+    statusLine = [NSString stringWithFormat:@"Memory free %d%% · pressure %@ · swap used %.1f GB", level, p, sw.xsu_used / 1073741824.0];
+    if (self.live) {
+        NSString *listening = hidOK && tapOK ? @"Listening" : @"Partly listening (see Help)";
+        self.window.subtitle = [NSString stringWithFormat:@"%@ · %@", listening, statusLine];
+    }
     CFPreferencesAppSynchronize(kCFPreferencesAnyApplication);
-    [self refreshPrefs];
+    if (self.live) [self refreshPrefs];
     if (++statusTicks % 30 == 0) [self refreshBatteryAndColour];
 }
 
-#pragma mark Snapshot mode (used to produce the README screenshot)
+#pragma mark Demo mode (anonymised data for README screenshots)
 
 - (void)injectDemoState {
     for (RGDevice *d in self.devices) {
@@ -1391,6 +1524,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
             n = 1;
             d->hidDown[2] = YES;
             d->sent[1] = 128; d->sent[2] = 23; d->dropped[2] = 1;
+            d->battery = 72;
         } else {
             f[0].normalized.pos = (MTPoint){0.40f, 0.52f};
             f[1].normalized.pos = (MTPoint){0.55f, 0.56f};
@@ -1406,7 +1540,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     evtDown[2] = YES;
     delivered[1] = 192; delivered[2] = 31;
     hidOK = tapOK = YES;
-    statusLine = @"Memory free 58% · pressure normal · swap used 0.0 GB · button reports ok · click events ok";
+    self.window.subtitle = @"Listening · Memory free 58% · pressure normal · swap used 0.0 GB";
     [lines addObjectsFromArray:@[
         [NSString stringWithFormat:@"09:41:02 · RodentGym %@ started: button reports ok, click events ok", APP_VERSION],
         @"09:41:02 · Devices: Magic Mouse (Magic Mouse 2 (Lightning), firmware 3.1.1); Magic Trackpad (Magic Trackpad 2 (Lightning), firmware 8.7.1)",
@@ -1433,21 +1567,26 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
         NSArray<NSString *> *args = NSProcessInfo.processInfo.arguments;
-        NSUInteger i = [args indexOfObject:@"--render-icon"];
+        NSUInteger i = [args indexOfObject:@"--appearance"];   // for rendering docs in a fixed appearance
+        if (i != NSNotFound && i + 1 < args.count)
+            app.appearance = [NSAppearance appearanceNamed:[args[i + 1] isEqualToString:@"dark"] ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        i = [args indexOfObject:@"--render-icon"];
         if (i != NSNotFound && i + 1 < args.count) return writeIconPNG(args[i + 1], 1024) ? 0 : 1;
 
         i = [args indexOfObject:@"--snapshot-game"];
         if (i != NSNotFound && i + 1 < args.count) return [[RGCheeseStack new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
+        i = [args indexOfObject:@"--snapshot-trainer"];
+        if (i != NSNotFound && i + 1 < args.count) return [[RGGestureTrainer new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
 
         RGController *controller = [RGController new];
         i = [args indexOfObject:@"--snapshot"];
         if (i != NSNotFound && i + 1 < args.count) {
             controller.snapshotPath = args[i + 1];
-            controller.demo = [args containsObject:@"--demo"];
             [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
         } else {
             [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         }
+        controller.demo = [args containsObject:@"--demo"];
         app.delegate = controller;
         [app run];
     }
