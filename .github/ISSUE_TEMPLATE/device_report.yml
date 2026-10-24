@@ -1,0 +1,38 @@
+name: Device report
+description: Wrong colour, unknown model, or readings from a device with a known fault.
+labels: [device support]
+body:
+  - type: markdown
+    attributes:
+      value: Reports like this are how RodentGym learns about devices it hasn't seen. Thank you.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What's this about?
+      options:
+        - The colour is wrong
+        - The model shows as a product ID
+        - My device has a known fault, here are its readings
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: The device
+      description: Its name and colour as Apple sells it, and the year if you know it.
+      placeholder: Magic Trackpad, black, 2022 (USB-C)
+    validations:
+      required: true
+  - type: input
+    id: shown
+    attributes:
+      label: What RodentGym shows
+      description: The model line and the colour line from the device's card, including the colour code number.
+      placeholder: "Magic Trackpad (product 0x0324) · Colour code 1"
+  - type: textarea
+    id: report
+    attributes:
+      label: Self-Test report or log lines
+      description: For a faulty device, run the Hardware Self-Test and paste Copy Report here. Remove the serial number if you'd rather not share it.
+      render: text

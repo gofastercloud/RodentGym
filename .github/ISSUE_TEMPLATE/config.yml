@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Ask a question
+    url: https://github.com/gofastercloud/RodentGym/discussions
+    about: "Not sure if something's a bug, or what a reading means? Ask in Discussions."
+  - name: Read the help
+    url: https://gofastercloud.github.io/RodentGym/help.html
+    about: Fixes for the common problems, and what every tool shows.
+  - name: Report a security problem
+    url: https://github.com/gofastercloud/RodentGym/security/advisories/new
+    about: Please report security issues privately, not as a public issue.

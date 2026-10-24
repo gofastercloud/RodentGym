@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — 2026-10-25
+
+- **Adjustable Magic Mouse split:** drag the dashed line between the primary and secondary click areas on the mouse, or use the slider in Settings. The new split is applied to the driver straight away and saved to the mouse's preferences, so it survives reconnecting and restarting. Reset to 55% puts back Apple's default. This is the only setting RodentGym changes, and only when you move it.
+- **New Help:** a native window with a searchable topic sidebar, rewritten from scratch and rendered from `Resources/Help.md`. The same file builds the help page on the website.
+- **Latency Monitor:** memory pressure removed, to keep it focused on the devices.
+- **Screenshots:** every window can be rendered with its title bar and toolbar from anonymised demo data, in light and dark (`./build.sh --screenshot`).
+- **Website** at [gofastercloud.github.io/RodentGym](https://gofastercloud.github.io/RodentGym/), plus contributing guide, code of conduct, security policy, and issue templates.
+
 ## 0.4.0 — 2026-10-25
 
 - **Latency Monitor** (Devices › Latency Monitor, ⌘D): click latency (kernel HID report to delivered click), touch report rate with jitter and stalls, and Bluetooth signal on one two-minute timeline, with memory pressure shaded behind and dropped clicks, connects and disconnects marked across all three. It records from launch. Tiles summarise median and 95th-percentile latency, drops, report rate, signal and memory, and a Liquid Glass readout shows the latest click.

@@ -76,7 +76,7 @@ Some trackpads don't send a separate button report for every click. RodentGym ma
 
 # Latency Monitor | waveform.path.ecg | Click latency, report rate and signal on one timeline
 
-Three graphs share a two-minute timeline, so you can see whether problems line up. Open it with **Devices › Latency Monitor** or press `⌘D`. It records from the moment RodentGym starts, so recent history is already there when you open it.
+Three graphs share a two-minute timeline, so you can see whether problems line up. Open it from **Devices › Latency Monitor** or press `⌘D`. It records from the moment RodentGym starts, so recent history is already there when you open it.
 
 - **Click latency.** For each click, the time from the Mac receiving the button report to the click reaching apps. A few milliseconds is normal. Dropped clicks show as a red ✕ with a line through every graph.
 - **Touch report rate.** How many touch frames per second each device sends while you touch it, with jitter. A steady line is healthy. Red ▲ marks are stalls, frames that arrived far later than usual.
@@ -88,7 +88,7 @@ Dotted lines mark devices connecting and disconnecting. The tiles underneath sum
 
 # Hardware Self-Test | checkmark.seal | Dead zones, phantom touches and haptics
 
-Three short checks for faults in the device itself. Open it with **Devices › Hardware Self-Test** or press `⌘E`, choose the device in the toolbar, then pick a test.
+Three short checks for faults in the device itself. Open it from **Devices › Hardware Self-Test** or press `⌘E`. Choose the device in the toolbar, then pick a test.
 
 ## Surface Coverage
 
@@ -110,7 +110,7 @@ On a Force Touch trackpad the click you feel is made by a haptic engine. Rest on
 
 # Gesture Trainer | hand.draw | Practise the gestures you have switched on
 
-A checklist of every gesture you have switched on for each device. Open it with **Gym › Gesture Trainer** or press `⌘T`. Do a gesture with the pointer over the practice pad and it's ticked off. The banner names what was recognised, with details such as how far you pinched or how quickly you double-clicked.
+A checklist of every gesture you have switched on for each device. Open it from **Gym › Gesture Trainer** or press `⌘T`. Do a gesture with the pointer over the practice pad and it's ticked off. The banner names what was recognised, with details such as how far you pinched or how quickly you double-clicked.
 
 - **App gestures** are captured on the pad: clicks, tap to click, Force Click, scroll, pinch, rotate, smart zoom, swipe between pages and three-finger drag.
 - **System gestures** are recognised from the raw touches: Mission Control, App Exposé, full-screen swipes, squeeze, spread, Notification Centre and three-finger tap. macOS still acts on them, because RodentGym never blocks input, so come back to the trainer to see the result.
@@ -118,7 +118,7 @@ A checklist of every gesture you have switched on for each device. Open it with 
 
 # Force Sensor | gauge.with.dots.needle.67percent | How hard you press, graphed live
 
-A scrolling graph of click pressure from a Force Touch trackpad. Open it with **Gym › Force Sensor** or press `⌘J` and press with the pointer over the graph.
+A scrolling graph of click pressure from a Force Touch trackpad. Open it from **Gym › Force Sensor** or press `⌘J`, then press on the trackpad with the pointer over the graph.
 
 - The graph has three bands: **Touch** (before the click), **Click** and **Force Click**. Left clicks draw blue and right clicks orange.
 - A **dashed** line means the click arrived with no force data. That's normal for a Magic Mouse, which has no force sensor.
@@ -126,7 +126,7 @@ A scrolling graph of click pressure from a Force Touch trackpad. Open it with **
 
 # Cheese Stack | gamecontroller | A falling-block click workout
 
-Intermittent problems are hard to reproduce on demand, so RodentGym includes a game that uses every input, quickly and often. Open it with **Gym › Cheese Stack** or press `⌘G`.
+Intermittent problems are hard to reproduce on demand, so RodentGym includes a game that uses every input, quickly and often. Open it from **Gym › Cheese Stack** or press `⌘G`.
 
 - **Steer** with the pointer. **Left-click** rotates anticlockwise and **right-click** rotates clockwise.
 - **Scroll** to drop the piece, and **flick** quickly (or middle-click) to slam it down.
@@ -136,7 +136,7 @@ The **Left** and **Right** tiles light up as each click arrives. If you click an
 
 # Settings | gearshape | Window, devices, Bluetooth and the mouse split
 
-Open Settings with **RodentGym › Settings…** or press `⌘,`.
+Open Settings from **RodentGym › Settings…** or press `⌘,`.
 
 ## Magic Mouse split
 

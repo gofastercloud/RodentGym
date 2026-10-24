@@ -1,0 +1,21 @@
+name: Idea or feature request
+description: Suggest something RodentGym could do.
+labels: [idea]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do or find out?
+      description: Describing the problem first helps more than describing a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Want to build it?
+      options:
+        - label: I'd like to work on this myself

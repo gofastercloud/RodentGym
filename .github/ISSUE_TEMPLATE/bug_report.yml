@@ -1,0 +1,51 @@
+name: Bug report
+description: Something in RodentGym isn't working as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report this. The more detail you can give, the faster it can be fixed.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can it be reproduced?
+      placeholder: |
+        1. Open the Latency Monitor
+        2. Click with the Magic Mouse
+        3. …
+  - type: input
+    id: versions
+    attributes:
+      label: RodentGym and macOS versions
+      description: RodentGym › About RodentGym shows the version. Apple menu › About This Mac shows macOS.
+      placeholder: RodentGym 0.4.0, macOS 27.0.1
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      multiple: true
+      options:
+        - Magic Mouse
+        - Magic Trackpad
+        - Built-in MacBook trackpad
+        - Other
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines or Self-Test report
+      description: A few lines from ~/Library/Logs/RodentGym.log around the problem, or Copy Report from the Hardware Self-Test. Remove anything you'd rather not share, such as device serial numbers.
+      render: text
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Optional, but often helpful.

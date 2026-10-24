@@ -33,7 +33,7 @@
 #include <mach/mach_time.h>
 
 #define APP_NAME    @"RodentGym"
-#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.4.0")
+#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.5.0")
 #define LOG_PATH    [@"~/Library/Logs/RodentGym.log" stringByExpandingTildeInPath]
 
 #pragma mark - MultitouchSupport (private framework)
