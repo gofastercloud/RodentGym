@@ -45,7 +45,7 @@
   <li><b>Play a sound when a click is dropped</b> makes drops easy to notice.</li>
   <li><b>Log every click</b> writes successful clicks as well as problems. Turn it off for long sessions.</li>
   <li><b>Drop detection window</b> is how long RodentGym waits for a reported click to arrive before calling it dropped. The default is 400 ms.</li>
-  <li><b>Device colours.</b> Accessories report a numeric colour code, but Apple doesn't publish what the codes mean. Choose the finish once per code, and the drawings match your hardware from then on.</li>
+  <li><b>Device colours.</b> Each accessory reports a colour code, which RodentGym decodes automatically (for example 0 is White, 5 is Grey / space grey, 9 is Space Grey). If a device is drawn in the wrong finish, override it here.</li>
 </ul>
 
 <h2>Shortcuts</h2>
@@ -62,6 +62,7 @@
 <ul>
   <li>Touch data comes from Apple's private MultitouchSupport framework. A future macOS update could change or break it.</li>
   <li>The trackpad corner area is drawn approximately, because Apple doesn't publish its exact size.</li>
+  <li>Colour codes aren't documented by Apple. RodentGym's table matches Apple's Continuity colour codes and has been checked against real devices, but a rare model could be decoded wrongly. Use Settings to override it.</li>
   <li>Devices are detected when connected and disconnected. If one doesn't appear, choose <b>Devices › Rescan Devices</b>.</li>
 </ul>
 </body></html>

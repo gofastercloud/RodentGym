@@ -14,7 +14,7 @@ For every connected Magic Mouse and Magic Trackpad (and optionally a MacBook's b
 - **Secondary-click zones** from your current settings, including the left/right split, left-handed mode and trackpad corner clicks.
 - **What the hardware sends**: the raw HID button reports, before macOS processes them.
 - **What macOS delivers**: the click events that actually reach apps.
-- **Device details**: model, firmware, connection, battery, colour code, and the settings the driver is applying right now (not just what System Settings shows).
+- **Device details**: model, firmware, connection, battery, colour (decoded from the device's colour code and used for the drawing), and the settings the driver is applying right now (not just what System Settings shows).
 
 When the hardware reports a click and macOS never delivers it, RodentGym flags it as **DROPPED**, plays a sound and logs it with the memory state at that moment. Clicks that arrive as the wrong button are flagged as **remapped**. Changes to secondary-click settings are logged as they happen.
 
@@ -73,7 +73,7 @@ Watching mouse click events doesn't normally need a permission prompt. If click 
 ## Limitations
 
 - Touch data comes from Apple's **private** MultitouchSupport framework, which isn't a supported API and could change in any macOS update.
-- Accessories report a numeric colour code, but Apple doesn't publish the mapping. Choose the finish for each code once in Settings.
+- Colour comes from the `ColorID` each accessory reports. Apple doesn't document it, but the values match the colour table in Apple's Continuity proximity-pairing messages ([furiousMAC/continuity](https://github.com/furiousMAC/continuity)): 0 White, 1 Black, 2 Red, 3 Blue, 4 Pink, 5 Grey, 6 Silver, 7 Gold, 8 Rose Gold, 9 Space Grey, 10 Dark Blue, 11 Light Blue, 12 Yellow. This has been confirmed on a white Magic Mouse 2 (0) and a space grey Magic Trackpad 2 (5). If a device is drawn in the wrong finish, override it in Settings, and please open an issue with the model and code.
 - The trackpad corner area for secondary clicks is drawn approximately.
 - Model names are known for the Lightning-era Magic Mouse 2 and Magic Trackpad 2 and the first generation. Other models show their product ID.
 

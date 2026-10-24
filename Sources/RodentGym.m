@@ -144,7 +144,40 @@ static NSDictionary<NSString *, NSNumber *> *registryValuesWithKey(NSString *key
 #pragma mark - Device model
 
 typedef NS_ENUM(NSInteger, RGKind) { RGKindMouse, RGKindTrackpad, RGKindBuiltIn };
-typedef NS_ENUM(NSInteger, RGFinish) { RGFinishWhite, RGFinishBlack };
+// How a surface is drawn: a light or dark top, and the colour of the aluminium edge.
+typedef struct { BOOL darkTop; CGFloat rimR, rimG, rimB; } RGStyle;
+static const RGStyle kLightStyle = {NO, 0.86, 0.86, 0.87};
+static const RGStyle kDarkStyle = {YES, 0.42, 0.43, 0.45};
+
+// Apple accessory colour codes, as reported in the IORegistry `ColorID` property. The same table
+// is used in Continuity proximity-pairing adverts (see furiousMAC/continuity, airpods_color_vals),
+// and macOS's CoreUtils carries the same ordered names. Verified: Magic Mouse 2 white = 0,
+// Magic Trackpad 2 space grey = 5.
+typedef struct { int code; __unsafe_unretained NSString *name; RGStyle style; } RGColour;
+static const RGColour kColours[] = {
+    {0,  @"White",      {NO,  0.86, 0.86, 0.87}},
+    {1,  @"Black",      {YES, 0.80, 0.80, 0.82}},   // black surface on silver aluminium
+    {2,  @"Red",        {NO,  0.78, 0.24, 0.26}},
+    {3,  @"Blue",       {NO,  0.30, 0.46, 0.78}},
+    {4,  @"Pink",       {NO,  0.93, 0.64, 0.68}},
+    {5,  @"Grey / space grey", {YES, 0.42, 0.43, 0.45}},   // 2017 space grey Magic Trackpad 2 reports 5
+    {6,  @"Silver",     {NO,  0.86, 0.86, 0.87}},
+    {7,  @"Gold",       {NO,  0.89, 0.79, 0.62}},
+    {8,  @"Rose Gold",  {NO,  0.91, 0.73, 0.69}},
+    {9,  @"Space Grey", {YES, 0.42, 0.43, 0.45}},
+    {10, @"Dark Blue",  {YES, 0.18, 0.25, 0.42}},
+    {11, @"Light Blue", {NO,  0.64, 0.79, 0.91}},
+    {12, @"Yellow",     {NO,  0.95, 0.83, 0.42}},
+};
+
+static const RGColour *colourForCode(int code) {
+    for (size_t i = 0; i < sizeof kColours / sizeof kColours[0]; i++) if (kColours[i].code == code) return &kColours[i];
+    return NULL;
+}
+
+static NSColor *blend(NSColor *c, NSColor *with, CGFloat amount) {
+    return [[c colorUsingColorSpace:NSColorSpace.sRGBColorSpace] blendedColorWithFraction:amount ofColor:with] ?: c;
+}
 
 static NSString *modelName(int productID, RGKind kind) {
     if (kind == RGKindBuiltIn) return @"Built-in trackpad";
@@ -288,8 +321,9 @@ static NSBezierPath *surfacePath(RGKind kind, NSRect r) {
 
 // Renders a device surface lit from the upper left: shadow, aluminium edge, shell or glass, sheen.
 // Works in flipped and unflipped contexts (the window view is flipped, the app icon is not).
-static void drawSurface(RGKind kind, NSRect r, RGFinish finish) {
-    BOOL black = finish == RGFinishBlack;
+static void drawSurface(RGKind kind, NSRect r, RGStyle style) {
+    BOOL black = style.darkTop;
+    NSColor *rimColour = rgb(style.rimR, style.rimG, style.rimB);
     BOOL flipped = NSGraphicsContext.currentContext.isFlipped;
     CGFloat down = flipped ? 1 : -1;   // sign of "towards the bottom of the screen"
     NSBezierPath *base = surfacePath(kind, NSInsetRect(r, -3, -3));
@@ -300,12 +334,13 @@ static void drawSurface(RGKind kind, NSRect r, RGFinish finish) {
     shadow.shadowBlurRadius = MAX(6, r.size.width * 0.08);
     shadow.shadowOffset = NSMakeSize(0, -r.size.width * 0.025);
     [shadow set];
-    [gray(black ? 0.12 : 0.65) setFill];
+    [rimColour setFill];
     [base fill];
     [NSGraphicsContext restoreGraphicsState];
 
-    NSGradient *rim = black ? [[NSGradient alloc] initWithStartingColor:gray(0.36) endingColor:gray(0.10)]
-                            : [[NSGradient alloc] initWithStartingColor:gray(0.93) endingColor:gray(0.56)];
+    // Aluminium edge in the device's colour, lit from above
+    NSGradient *rim = [[NSGradient alloc] initWithStartingColor:blend(rimColour, NSColor.whiteColor, 0.45)
+                                                    endingColor:blend(rimColour, NSColor.blackColor, 0.4)];
     [rim drawInBezierPath:base angle:90 * down];
 
     NSBezierPath *top = surfacePath(kind, r);
@@ -363,7 +398,7 @@ static NSImage *appIcon(CGFloat size) {
             [ring stroke];
         }
         [NSGraphicsContext restoreGraphicsState];
-        drawSurface(RGKindMouse, mouse, RGFinishWhite);
+        drawSurface(RGKindMouse, mouse, kLightStyle);
         CGFloat dot = s * 0.045;
         [[NSColor colorWithSRGBRed:1 green:0.55 blue:0.15 alpha:0.35] setFill];
         [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(touch.x - dot * 1.8, touch.y - dot * 1.8, dot * 3.6, dot * 3.6)] fill];
@@ -425,7 +460,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
 @property (copy) NSString *snapshotPath;
 @property BOOL demo;
 - (NSArray<RGDevice *> *)visibleDevices;
-- (RGFinish)finishFor:(RGDevice *)d;
+- (RGStyle)styleFor:(RGDevice *)d;
 - (NSString *)colourTextFor:(RGDevice *)d;
 - (double)matchWindow;
 - (void)hidButton:(int)b down:(BOOL)down device:(IOHIDDeviceRef)h;
@@ -509,9 +544,9 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     NSSize sz = (area.size.width / area.size.height > aspect) ? NSMakeSize(area.size.height * aspect, area.size.height)
                                                               : NSMakeSize(area.size.width, area.size.width / aspect);
     NSRect s = NSMakeRect(round(NSMidX(area) - sz.width / 2), round(NSMidY(area) - sz.height / 2), round(sz.width), round(sz.height));
-    RGFinish finish = [c finishFor:d];
-    drawSurface(d->kind, s, finish);
-    [self drawZones:d surface:s finish:finish];
+    RGStyle style = [c styleFor:d];
+    drawSurface(d->kind, s, style);
+    [self drawZones:d surface:s dark:style.darkTop];
     [self drawTouches:d surface:s];
 
     // What the hardware reports
@@ -542,8 +577,8 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
           drops ? [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightBold] : mono, drops ? RED : gray(0.82));
 }
 
-- (void)drawZones:(RGDevice *)d surface:(NSRect)s finish:(RGFinish)finish {
-    NSColor *ink = finish == RGFinishBlack ? gray(0.62) : gray(0.42);
+- (void)drawZones:(RGDevice *)d surface:(NSRect)s dark:(BOOL)dark {
+    NSColor *ink = dark ? gray(0.62) : gray(0.42);
     NSColor *accent = rgb(0.92, 0.5, 0.1);
     NSFont *f = [NSFont systemFontOfSize:9.5 weight:NSFontWeightSemibold];
     NSColor *zoneFill = [ORANGE colorWithAlphaComponent:0.16];
@@ -675,14 +710,23 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     return [NSUserDefaults.standardUserDefaults dictionaryForKey:kFinishes][[@(d->colorID) stringValue]];
 }
 
-- (RGFinish)finishFor:(RGDevice *)d { return [[self finishNameFor:d] isEqualToString:@"black"] ? RGFinishBlack : RGFinishWhite; }
+// The colour code decides the drawing unless the user has overridden it in Settings.
+- (RGStyle)styleFor:(RGDevice *)d {
+    NSString *override = [self finishNameFor:d];
+    if ([override isEqualToString:@"black"]) return kDarkStyle;
+    if ([override isEqualToString:@"white"]) return kLightStyle;
+    const RGColour *c = colourForCode(d->colorID);
+    return c ? c->style : kLightStyle;
+}
 
 - (NSString *)colourTextFor:(RGDevice *)d {
     if (d->colorID < 0) return @"Colour: not reported by the device";
-    NSString *f = [self finishNameFor:d];
-    if ([f isEqualToString:@"black"]) return [NSString stringWithFormat:@"Colour: black / space grey (code %d)", d->colorID];
-    if ([f isEqualToString:@"white"]) return [NSString stringWithFormat:@"Colour: white / silver (code %d)", d->colorID];
-    return [NSString stringWithFormat:@"Colour code %d · name it in Settings", d->colorID];
+    NSString *override = [self finishNameFor:d];
+    if (override) return [NSString stringWithFormat:@"Colour: %@ (set in Settings; code %d)",
+                          [override isEqualToString:@"black"] ? @"black / space grey" : @"white / silver", d->colorID];
+    const RGColour *c = colourForCode(d->colorID);
+    return c ? [NSString stringWithFormat:@"Colour: %@ (code %d)", c->name, d->colorID]
+             : [NSString stringWithFormat:@"Colour code %d · unknown, set it in Settings", d->colorID];
 }
 
 #pragma mark Lifecycle
@@ -1010,7 +1054,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     [stack addArrangedSubview:[self note:@"How long RodentGym waits for macOS to deliver a click the hardware reported before calling it dropped. Raise it if you see false drops while the Mac is very busy."]];
 
     [stack addArrangedSubview:[self heading:@"Device colours"]];
-    [stack addArrangedSubview:[self note:@"Accessories report a colour code, but Apple doesn't publish what the codes mean. Pick the finish for each code so the surfaces are drawn correctly; the choice applies to every device with that code."]];
+    [stack addArrangedSubview:[self note:@"Each accessory reports a colour code, and RodentGym decodes it automatically. If a device is drawn in the wrong finish, override it here. The choice applies to every device with that code."]];
     NSMutableDictionary<NSNumber *, NSMutableArray *> *codes = [NSMutableDictionary dictionary];
     for (RGDevice *d in self.devices) {
         if (d->colorID < 0) continue;
@@ -1024,7 +1068,9 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
         label.lineBreakMode = NSLineBreakByTruncatingTail;
         [label.widthAnchor constraintEqualToConstant:230].active = YES;
         NSPopUpButton *p = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
-        [p addItemsWithTitles:@[@"Not set", @"White / silver", @"Black / space grey"]];
+        const RGColour *known = colourForCode(code.intValue);
+        [p addItemsWithTitles:@[known ? [NSString stringWithFormat:@"Automatic (%@)", known->name] : @"Automatic (unknown)",
+                                @"White / silver", @"Black / space grey"]];
         p.identifier = code.stringValue;
         NSString *cur = finishes[code.stringValue];
         [p selectItemAtIndex:[cur isEqualToString:@"white"] ? 1 : [cur isEqualToString:@"black"] ? 2 : 0];
