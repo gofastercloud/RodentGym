@@ -1,0 +1,67 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  body { font-family: -apple-system, "Helvetica Neue", sans-serif; font-size: 13px; line-height: 1.45; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 20px 0 6px; }
+  p, li { margin: 0 0 6px; }
+  .lead { color: #666666; font-size: 13px; }
+  .ok { color: #2E9E55; font-weight: bold; }
+  .warn { color: #D98A1F; font-weight: bold; }
+  .bad { color: #E0473D; font-weight: bold; }
+  code { font-family: Menlo, monospace; font-size: 12px; }
+</style></head>
+<body>
+
+<h1>RodentGym Help</h1>
+<p class="lead">RodentGym shows what your Magic Mouse and Magic Trackpad report to the Mac, and what macOS actually delivers to apps. When the two don't match, it tells you.</p>
+
+<h2>Reading the window</h2>
+<p><b>Device cards.</b> Each connected Magic Mouse or Magic Trackpad gets a card. The drawing uses the sensor's real proportions and shows your fingers live. Blue dots are ordinary touches; orange dots are touches that count as a secondary (right) click under your current settings.</p>
+<p>The shaded orange area marks where a secondary click happens. On a Magic Mouse this follows the left/right split and switches sides for left-handed use. On a trackpad it shows the corner you chose, or says secondary click uses two fingers.</p>
+<p><b>Sends.</b> These lights show the raw button reports from the device itself, before macOS processes them.</p>
+<p><b>macOS delivers.</b> These lights show the click events macOS hands to apps. A healthy click lights <b>Sends</b> and then <b>macOS delivers</b> almost immediately.</p>
+<p>Under each drawing you'll find the model, firmware, connection, battery, colour and the settings the device's driver is applying right now. Those come from the driver, not from System Settings, so they show what's really in effect.</p>
+
+<h2>What the log symbols mean</h2>
+<ul>
+  <li><span class="ok">✓</span> The click went through normally.</li>
+  <li><span class="warn">≠</span> Something changed or didn't match. For example, the mouse sent Right and macOS delivered Left, or a secondary click setting changed.</li>
+  <li><span class="bad">✗ DROPPED</span> The device reported a click but macOS never delivered it. RodentGym records the memory state at that moment, so you can see whether heavy load was involved.</li>
+  <li>· Information, such as startup, device changes, or a click from a device that sends no button report.</li>
+</ul>
+<p>Everything is also written to <code>~/Library/Logs/RodentGym.log</code>. Choose <b>Devices › Open Log File</b> to read it.</p>
+
+<h2>Common findings</h2>
+<p><b>Right-click does nothing, and the card says "Secondary click: Off".</b> The mouse is in one-button mode. Turn on secondary click in <a href="x-apple.systempreferences:com.apple.Mouse-Settings.extension">Mouse settings</a> (Secondary click › Click Right Side). Resetting mouse preferences turns this off.</p>
+<p><b>Right-clicks show as Left in the log (≠).</b> Your finger is landing on the primary side of the split, or another finger is resting on the surface. Watch the dots while you click.</p>
+<p><b>Clicks are DROPPED.</b> The hardware is fine. Something in macOS is discarding the click. Check the memory figures on those log lines, quit anything using a lot of memory or GPU, and restart if it keeps happening. If drops continue on an idle Mac, report it to Apple with Feedback Assistant and include the log lines.</p>
+<p><b>Trackpad clicks show "no button report".</b> Some trackpads don't send a separate button report for every click. RodentGym then matches the click to the trackpad you're touching instead.</p>
+
+<h2>Settings</h2>
+<ul>
+  <li><b>Keep RodentGym on top</b> keeps the window visible while you click in other apps.</li>
+  <li><b>Show the built-in trackpad</b> adds a card for a MacBook's own trackpad.</li>
+  <li><b>Play a sound when a click is dropped</b> makes drops easy to notice.</li>
+  <li><b>Log every click</b> writes successful clicks as well as problems. Turn it off for long sessions.</li>
+  <li><b>Drop detection window</b> is how long RodentGym waits for a reported click to arrive before calling it dropped. The default is 400 ms.</li>
+  <li><b>Device colours.</b> Accessories report a numeric colour code, but Apple doesn't publish what the codes mean. Choose the finish once per code, and the drawings match your hardware from then on.</li>
+</ul>
+
+<h2>Shortcuts</h2>
+<ul>
+  <li><code>⌘,</code> Settings · <code>⌘?</code> Help · <code>⌘K</code> Reset counters · <code>⌘L</code> Open log</li>
+  <li><code>⇧⌘M</code> Mouse settings · <code>⇧⌘T</code> Trackpad settings · <code>⇧⌘R</code> Rescan devices</li>
+</ul>
+
+<h2>Privacy and permissions</h2>
+<p>RodentGym only listens. It never changes, blocks or creates input. It watches mouse buttons only, never the keyboard, and nothing leaves your Mac. The log stays in your Library folder.</p>
+<p>Watching mouse click events doesn't normally need any permission. If the <b>macOS delivers</b> lights say "Unavailable", allow RodentGym under <a href="x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent">Privacy &amp; Security › Input Monitoring</a> and reopen it.</p>
+
+<h2>Limitations</h2>
+<ul>
+  <li>Touch data comes from Apple's private MultitouchSupport framework. A future macOS update could change or break it.</li>
+  <li>The trackpad corner area is drawn approximately, because Apple doesn't publish its exact size.</li>
+  <li>Devices are detected when connected and disconnected. If one doesn't appear, choose <b>Devices › Rescan Devices</b>.</li>
+</ul>
+</body></html>
