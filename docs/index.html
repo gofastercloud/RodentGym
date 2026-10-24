@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RodentGym: see what your Magic Mouse and Magic Trackpad are doing</title>
+<meta name="description" content="A small, free, open-source diagnostic app for macOS. See what your Magic Mouse and Magic Trackpad send, what macOS delivers, and catch the clicks that go missing.">
+<link rel="canonical" href="https://gofastercloud.github.io/RodentGym/">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b111e" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" href="images/icon.png">
+<link rel="apple-touch-icon" href="images/icon.png">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RodentGym">
+<meta property="og:title" content="RodentGym">
+<meta property="og:description" content="See what your Magic Mouse and Magic Trackpad send, and what your Mac actually does with it. A small, free, open-source diagnostic app for macOS.">
+<meta property="og:url" content="https://gofastercloud.github.io/RodentGym/">
+<meta property="og:image" content="https://gofastercloud.github.io/RodentGym/images/main-light.png">
+<meta property="og:image:width" content="1560">
+<meta property="og:image:height" content="1780">
+<meta property="og:image:alt" content="RodentGym's main window, showing a Magic Mouse and a Magic Trackpad with live touches and the click log">
+<meta property="og:locale" content="en_AU">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="RodentGym">
+<meta name="twitter:description" content="See what your Magic Mouse and Magic Trackpad send, and what your Mac actually does with it. Free and open source.">
+<meta name="twitter:image" content="https://gofastercloud.github.io/RodentGym/images/main-light.png">
+<meta name="twitter:image:alt" content="RodentGym's main window, showing a Magic Mouse and a Magic Trackpad with live touches and the click log">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="RodentGym home">
+      <img src="images/icon.png" alt="" width="30" height="30">
+      <span>RodentGym</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li class="wide-only"><a href="#features">Features</a></li>
+        <li class="wide-only"><a href="#privacy">Privacy</a></li>
+        <li class="wide-only"><a href="#install">Install</a></li>
+        <li><a href="help.html">Help</a></li>
+        <li><a href="https://github.com/gofastercloud/RodentGym">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section class="hero" aria-labelledby="title">
+    <div class="wrap">
+      <div class="hero-text">
+        <img class="hero-icon" src="images/icon.png" alt="" width="112" height="112">
+        <h1 id="title">RodentGym</h1>
+        <p class="tagline">See what your Magic&nbsp;Mouse and Magic&nbsp;Trackpad send, and what your Mac actually does with&nbsp;it.</p>
+        <p class="sub">A small, free, open-source diagnostic app for macOS.</p>
+        <div class="buttons">
+          <a class="button button-primary" href="#install">Get RodentGym</a>
+          <a class="button button-secondary" href="https://github.com/gofastercloud/RodentGym">View on GitHub</a>
+        </div>
+        <p class="fine">For macOS 14 Sonoma or later. MIT licence.</p>
+      </div>
+      <figure class="shot hero-shot">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="images/main-dark.png">
+          <img src="images/main-light.png" width="1560" height="1780" fetchpriority="high"
+               alt="RodentGym's main window. A Magic Mouse card shows a touch on the right-hand side of the split, a Magic Trackpad card shows two fingers with trails, and the log underneath lists clicks, including one dropped right-click in red.">
+        </picture>
+      </figure>
+    </div>
+  </section>
+
+  <!-- Why it exists -->
+  <section class="section section-soft" id="why" aria-labelledby="why-title">
+    <div class="wrap">
+      <div class="prose">
+        <span class="eyebrow">Why it exists</span>
+        <h2 class="section-title" id="why-title">Mouse trouble is hard to fix when you can&rsquo;t see it.</h2>
+        <p class="lede">Right-click that does nothing. Clicks that vanish now and then. A trackpad that feels a bit off. You click again, it works, and you start to wonder if you imagined it.</p>
+        <p class="lede">RodentGym shows each step between your finger and your apps. When the steps don&rsquo;t agree, it tells you, logs it, and helps you work out whether the problem is the mouse, the wireless link or the Mac.</p>
+      </div>
+
+      <ol class="steps">
+        <li class="step">
+          <div class="step-visual" aria-hidden="true">
+            <svg class="mini-mouse" viewBox="0 0 52 72" fill="none">
+              <rect x="2" y="2" width="48" height="68" rx="24" fill="var(--surface)" stroke="var(--line-strong)" stroke-width="2"/>
+              <line x1="29" y1="4" x2="29" y2="68" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="3 3"/>
+              <circle cx="38" cy="20" r="11" stroke="var(--accent)" stroke-opacity="0.45" stroke-width="2"/>
+              <circle cx="38" cy="20" r="5.5" fill="var(--accent)"/>
+            </svg>
+          </div>
+          <h3>Where your fingers are</h3>
+          <p>Every touch, drawn live on the device at its sensor&rsquo;s real proportions.</p>
+        </li>
+        <li class="step">
+          <div class="step-visual" aria-hidden="true">
+            <div class="pills"><span class="pill">Left</span><span class="pill pill-on">Right</span></div>
+          </div>
+          <h3>What the device sends</h3>
+          <p>The raw button reports from the hardware, before macOS has done anything with them.</p>
+        </li>
+        <li class="step">
+          <div class="step-visual" aria-hidden="true">
+            <div class="pills"><span class="pill">Left</span><span class="pill pill-on">Right</span></div>
+          </div>
+          <h3>What macOS delivers</h3>
+          <p>The click events that actually reach your apps, a moment later.</p>
+        </li>
+      </ol>
+
+      <div class="mismatch">
+        <div>
+          <span class="tag tag-bad" aria-hidden="true">&#x2717;</span>
+          <p><strong>Dropped.</strong> The device reported a click and macOS never delivered it.</p>
+        </div>
+        <div>
+          <span class="tag tag-warn" aria-hidden="true">&#x2260;</span>
+          <p><strong>Remapped.</strong> The click arrived, but as the wrong button.</p>
+        </div>
+      </div>
+
+      <p class="origin">It started as a way to find out why one Magic Mouse&rsquo;s right-click kept disappearing. The answer turned out to be a setting that resets itself, and the app kept growing from there.</p>
+    </div>
+  </section>
+
+  <!-- Main window and split -->
+  <section class="section" id="features" aria-labelledby="features-title">
+    <div class="wrap">
+      <div class="feature feature-split">
+        <div class="feature-text">
+          <span class="eyebrow">The main window</span>
+          <h2 class="section-title" id="features-title">Watch every touch, and catch the clicks that go missing.</h2>
+          <h3>Live touches and clicks</h3>
+          <p>Each device is drawn in its own colour with your fingers on it in real time. Trails follow each finger and every click ripples out from where it happened. The secondary-click area is shaded from your actual settings.</p>
+          <h3>The settings really in effect</h3>
+          <p>Model, firmware, colour, battery and charging, and the settings each device&rsquo;s driver is applying right now. They come from the driver rather than System Settings, and the two don&rsquo;t always agree.</p>
+          <h3>A log with timestamps</h3>
+          <p>Dropped and remapped clicks are flagged as they happen and written to <code>~/Library/Logs/RodentGym.log</code>. Clicks that go through include their latency.</p>
+        </div>
+        <div class="feature-media">
+          <div class="crop crop-card">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/main-dark.png">
+              <img src="images/main-light.png" width="1560" height="1780" loading="lazy"
+                   alt="Detail of a Magic Mouse card: a touch in the orange secondary area, Sends Right lit, and one dropped right-click counted in red.">
+            </picture>
+          </div>
+        </div>
+      </div>
+
+      <figure class="log-figure">
+        <div class="crop crop-log">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="images/main-dark.png">
+            <img src="images/main-light.png" width="1560" height="1780" loading="lazy"
+                 alt="Detail of the log: normal clicks with their latency, a setting change in orange, and a dropped right-click in red.">
+          </picture>
+        </div>
+        <figcaption class="caption">The log. A setting that changed is in orange; a click macOS never delivered is in red.</figcaption>
+      </figure>
+
+      <div class="feature feature-split flip">
+        <div class="feature-text">
+          <span class="eyebrow">Magic Mouse split</span>
+          <h2 class="section-title">Move the line between left and right click.</h2>
+          <p>On a Magic Mouse, the right-click area starts 55% of the way across. System Settings doesn&rsquo;t let you change that. RodentGym does: drag the dashed line on the mouse in the main window, or use the slider in Settings.</p>
+          <p>The new split applies straight away and is saved, so it survives reconnecting and restarting. <strong>Reset to 55%</strong> puts Apple&rsquo;s default back.</p>
+          <p>This is the one place RodentGym changes anything, and only when you move it. It&rsquo;s also one of the newest parts of the app, so if it behaves oddly for you, please open an issue.</p>
+        </div>
+        <div class="feature-media">
+          <figure class="shot split-shot">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/settings-dark.png">
+              <img src="images/settings-light.png" width="1280" height="1462" loading="lazy"
+                   alt="RodentGym Settings, with the Magic Mouse split slider at 55% and a Reset to 55% button, plus Bluetooth, dropped-click and device colour options.">
+            </picture>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Latency Monitor and Self-Test -->
+  <section class="section section-soft" id="tools" aria-label="Latency Monitor and Hardware Self-Test">
+    <div class="wrap">
+      <div class="feature feature-wide">
+        <div class="feature-text">
+          <span class="eyebrow">Latency Monitor</span>
+          <h2 class="section-title">Three graphs on one timeline.</h2>
+          <p class="lede">Click latency, touch report rate and Bluetooth signal over the last two minutes, with dropped clicks, connects and disconnects marked across all three. When something goes wrong, you can see what else was happening at that moment.</p>
+          <p>It records from the moment RodentGym starts, so recent history is already there when you open it. Bluetooth signal is opt-in: RodentGym only asks for Bluetooth permission if you turn it on.</p>
+        </div>
+        <figure class="shot">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="images/latency-monitor-dark.png">
+            <img src="images/latency-monitor-light.png" width="2320" height="1680" loading="lazy"
+                 alt="The Latency Monitor: click latency dots, touch report rate lines with stall markers, and Bluetooth signal, all on a two-minute timeline with a dropped click marked in red.">
+          </picture>
+        </figure>
+      </div>
+
+      <div class="feature feature-wide">
+        <div class="feature-text">
+          <span class="eyebrow">Hardware Self-Test</span>
+          <h2 class="section-title">Check the device itself.</h2>
+          <p class="lede">Three short tests for faults in the hardware. <strong>Surface Coverage</strong> finds dead zones as you wipe a finger across the sensor. <strong>Phantom Touch</strong> catches a sensor reporting contact when nobody is touching it. <strong>Haptics</strong> plays three taps through a Force Touch trackpad&rsquo;s haptic engine.</p>
+          <p><strong>Copy Report</strong> puts every result, with each device&rsquo;s model, firmware and serial number, on the clipboard as plain text, ready for a support case.</p>
+        </div>
+        <figure class="shot">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="images/self-test-dark.png">
+            <img src="images/self-test-light.png" width="2360" height="1640" loading="lazy"
+                 alt="The Hardware Self-Test partway through Surface Coverage on a Magic Trackpad, with most of the grid green and Phantom Touch and Haptics already passed.">
+          </picture>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- The gym -->
+  <section class="section" id="gym" aria-labelledby="gym-title">
+    <div class="wrap">
+      <div class="prose center">
+        <span class="eyebrow">The gym</span>
+        <h2 class="section-title" id="gym-title">Put your hands to work.</h2>
+        <p class="lede">Intermittent problems are hard to reproduce on demand. These give you a reason to use every input, quickly and often, while RodentGym keeps watch.</p>
+      </div>
+
+      <div class="trio">
+        <figure>
+          <div class="frame">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/gesture-trainer-dark.png">
+              <img src="images/gesture-trainer-light.png" width="2280" height="1640" loading="lazy"
+                   alt="The Gesture Trainer with a checklist of trackpad gestures, most ticked, and a banner reading Squeeze with thumb and fingers.">
+            </picture>
+          </div>
+          <figcaption>
+            <h3>Gesture Trainer</h3>
+            <p>A checklist of the gestures you have switched on. Do each one and it&rsquo;s ticked off, including system gestures like Mission Control.</p>
+          </figcaption>
+        </figure>
+        <figure>
+          <div class="frame">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/force-sensor-dark.png">
+              <img src="images/force-sensor-light.png" width="2040" height="1480" loading="lazy"
+                   alt="The Force Sensor graph, showing left and right presses rising through the Touch, Click and Force Click bands.">
+            </picture>
+          </div>
+          <figcaption>
+            <h3>Force Sensor</h3>
+            <p>A live graph of how hard you press on a Force Touch trackpad, through click and Force Click.</p>
+          </figcaption>
+        </figure>
+        <figure>
+          <div class="frame">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/cheese-stack-dark.png">
+              <img src="images/cheese-stack-light.png" width="1304" height="1424" loading="lazy"
+                   alt="Cheese Stack, a falling-block game made of cheese pieces, with left and right click counts and Dropped clicks 0.">
+            </picture>
+          </div>
+          <figcaption>
+            <h3>Cheese Stack</h3>
+            <p>A falling-block game that uses every input. Clicks rotate, scrolling drops, and it counts any clicks that go missing while you play.</p>
+          </figcaption>
+        </figure>
+      </div>
+
+      <div class="feature feature-split">
+        <div class="feature-text">
+          <span class="eyebrow">Built-in help</span>
+          <h2 class="section-title">Answers without leaving the app.</h2>
+          <p>Searchable, with a page for each tool and the usual problems and their fixes. Press <kbd>&#x2318;?</kbd> in RodentGym to open it.</p>
+          <p>The same guide is on this site too.</p>
+          <div class="buttons"><a class="button button-secondary" href="help.html">Read the help</a></div>
+        </div>
+        <div class="feature-media">
+          <figure class="shot">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/help-dark.png">
+              <img src="images/help-light.png" width="2120" height="1520" loading="lazy"
+                   alt="RodentGym Help, with a sidebar of topics and the Latency Monitor page open.">
+            </picture>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Privacy -->
+  <section class="section section-soft" id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap">
+      <div class="prose">
+        <span class="eyebrow">Privacy</span>
+        <h2 class="section-title" id="privacy-title">RodentGym only listens.</h2>
+        <p class="lede">It never blocks, changes or creates input, and nothing it sees leaves your Mac.</p>
+      </div>
+      <ul class="facts">
+        <li><strong>Never the keyboard</strong><span>It watches mouse buttons and touches, and nothing else.</span></li>
+        <li><strong>No network</strong><span>RodentGym makes no network connections at all.</span></li>
+        <li><strong>No Accessibility permission</strong><span>It doesn&rsquo;t need it, because it only listens.</span></li>
+        <li><strong>Bluetooth only if you opt in</strong><span>Permission is requested only when you turn on signal monitoring. It reads the signal of devices already connected, and never scans, pairs or connects.</span></li>
+        <li><strong>A log only you can read</strong><span>It stays in <code>~/Library/Logs</code> on your Mac.</span></li>
+        <li><strong>One setting, when you ask</strong><span>The Magic Mouse split is the only thing it writes, and only when you move it.</span></li>
+      </ul>
+      <p class="note">Watching click events doesn&rsquo;t normally need permission. If click events show as unavailable, allow RodentGym under <strong>System Settings &rsaquo; Privacy &amp; Security &rsaquo; Input Monitoring</strong>. Because a self-built app is signed locally, each rebuild may ask again.</p>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section class="section" id="install" aria-labelledby="install-title">
+    <div class="wrap">
+      <div class="install">
+        <div>
+          <span class="eyebrow">Install</span>
+          <h2 class="section-title" id="install-title">Get RodentGym</h2>
+          <p class="notice">Signed downloads and Homebrew are coming soon.</p>
+          <p class="install-intro">Until then, building it yourself takes about a minute and needs only Apple&rsquo;s free command line tools. There&rsquo;s no Xcode project: the app is a handful of Objective-C files, built with <code>clang</code> and signed for local use.</p>
+          <ul class="requirements">
+            <li><strong>macOS 14 Sonoma or later.</strong> Developed on macOS 27, with Liquid Glass on macOS 26 and later.</li>
+            <li><strong>Apple&rsquo;s command line tools.</strong> Free, and installed with one command.</li>
+          </ul>
+        </div>
+
+        <div>
+          <p class="cmd-intro">If you don&rsquo;t have the command line tools yet, install them once:</p>
+          <div class="code">
+            <div class="code-head"><span>Terminal</span></div>
+            <pre><code>xcode-select --install</code></pre>
+          </div>
+
+          <p class="cmd-intro cmd-intro-next">Then clone, build and open it. <code>build.sh</code> installs the app to <code>~/Applications</code>.</p>
+          <div class="code">
+            <div class="code-head"><span>Terminal</span></div>
+            <pre><code>git clone https://github.com/gofastercloud/RodentGym.git
+cd RodentGym
+./build.sh
+open ~/Applications/RodentGym.app</code></pre>
+          </div>
+
+          <details class="more">
+            <summary>More build options</summary>
+            <div class="more-body">
+              <table class="rows">
+                <tr><th scope="row"><code>./build.sh --no-install</code></th><td>Build only, into <code>./build</code></td></tr>
+                <tr><th scope="row"><code>./build.sh --screenshot</code></th><td>Regenerate the images in <code>docs/images</code> from anonymised demo data</td></tr>
+              </table>
+              <p class="tight">To open straight into a tool:</p>
+              <div class="code">
+                <pre><code>open ~/Applications/RodentGym.app --args --show-latency --show-selftest --show-trainer --show-game --show-force</code></pre>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <aside class="limits" aria-labelledby="limits-title">
+        <h2 id="limits-title">Worth knowing before you rely on it</h2>
+        <ul>
+          <li>Touch data comes from Apple&rsquo;s <strong>private</strong> MultitouchSupport framework. A macOS update could change or break it, and it rules out the Mac App Store.</li>
+          <li>Latency starts when the Mac receives the button report, so time spent over Bluetooth isn&rsquo;t included.</li>
+          <li>Stall and lost-stroke detection are new heuristics that haven&rsquo;t yet been checked against known-faulty hardware. If you have a genuinely faulty device, your reports would help a lot.</li>
+          <li>The adjustable Magic Mouse split is new as well.</li>
+          <li>Colour codes aren&rsquo;t documented by Apple. RodentGym&rsquo;s table matches real devices, and Settings can override it.</li>
+          <li>Model names are known for the Magic Mouse 2, Magic Trackpad 2 and first-generation devices. Other models show their product ID.</li>
+        </ul>
+      </aside>
+    </div>
+  </section>
+
+  <!-- Open source -->
+  <section class="section section-soft" id="open-source" aria-labelledby="oss-title">
+    <div class="wrap">
+      <div class="prose">
+        <span class="eyebrow">Open source</span>
+        <h2 class="section-title" id="oss-title">Free, open source, and happy to have help.</h2>
+        <p class="lede">RodentGym is MIT-licensed and looked after in spare time. Contributions of every size are welcome: a typo, a better explanation in the help, support for a device model, or a whole new tool.</p>
+      </div>
+      <div class="oss">
+        <div class="oss-card">
+          <h3>Contribute</h3>
+          <p><a href="https://github.com/gofastercloud/RodentGym/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> explains how the code fits together and how to get a change in. Not sure where to start? Look for issues labelled <a href="https://github.com/gofastercloud/RodentGym/labels/good%20first%20issue">good first issue</a>, or ask in Discussions. Questions like &ldquo;is this reading normal?&rdquo; are welcome there too.</p>
+          <p>Found a bug? A Self-Test report or a few lines from the log helps a lot.</p>
+          <div class="buttons">
+            <a class="button button-secondary" href="https://github.com/gofastercloud/RodentGym/issues/new/choose">Open an issue</a>
+            <a class="button button-secondary" href="https://github.com/gofastercloud/RodentGym/discussions">Discussions</a>
+          </div>
+        </div>
+        <div class="oss-card">
+          <h3>Support</h3>
+          <p>RodentGym is free and will stay that way. If it saved you an afternoon, or a trip to the Apple Store, you can sponsor its development on GitHub. It&rsquo;s never expected and always appreciated.</p>
+          <p>A star, or telling someone who&rsquo;s fighting their mouse, helps too.</p>
+          <div class="buttons">
+            <a class="button button-secondary" href="https://github.com/sponsors/gofastercloud">Sponsor on GitHub</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-top">
+      <a class="brand" href="./">
+        <img src="images/icon.png" alt="" width="24" height="24" loading="lazy">
+        <span>RodentGym</span>
+      </a>
+      <nav aria-label="Footer">
+        <ul>
+          <li><a href="help.html">Help</a></li>
+          <li><a href="https://github.com/gofastercloud/RodentGym">GitHub</a></li>
+          <li><a href="https://github.com/gofastercloud/RodentGym/discussions">Discussions</a></li>
+          <li><a href="https://github.com/gofastercloud/RodentGym/blob/main/CHANGELOG.md">Changelog</a></li>
+          <li><a href="https://github.com/sponsors/gofastercloud">Sponsor</a></li>
+        </ul>
+      </nav>
+    </div>
+    <p>Free and open source under the <a href="https://github.com/gofastercloud/RodentGym/blob/main/LICENSE">MIT licence</a>. &copy; 2026 gofastercloud.</p>
+    <p>RodentGym isn&rsquo;t affiliated with or endorsed by Apple. Magic Mouse, Magic Trackpad, Force Touch and Liquid Glass are trademarks of Apple Inc.</p>
+  </div>
+</footer>
+
+<script>
+  // Adds a Copy button to each install command block. The commands are
+  // plain text, so the page works the same without this.
+  (function () {
+    if (!navigator.clipboard) return;
+    document.querySelectorAll('.code').forEach(function (block) {
+      var head = block.querySelector('.code-head');
+      var code = block.querySelector('pre code');
+      if (!head || !code) return;
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'copy';
+      button.textContent = 'Copy';
+      button.setAttribute('aria-label', 'Copy commands');
+      var status = document.createElement('span');
+      status.className = 'visually-hidden';
+      status.setAttribute('role', 'status');
+      head.appendChild(button);
+      head.appendChild(status);
+      var timer;
+      button.addEventListener('click', function () {
+        navigator.clipboard.writeText(code.textContent.trim() + '\n').then(function () {
+          button.textContent = 'Copied';
+          status.textContent = 'Copied to the clipboard';
+          clearTimeout(timer);
+          timer = setTimeout(function () {
+            button.textContent = 'Copy';
+            status.textContent = '';
+          }, 2000);
+        });
+      });
+    });
+  })();
+</script>
+</body>
+</html>
