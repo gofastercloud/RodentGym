@@ -20,6 +20,19 @@ When the hardware reports a click and macOS never delivers it, RodentGym flags i
 
 Everything goes to `~/Library/Logs/RodentGym.log`, so you can line up intermittent problems with whatever else the Mac was doing at the time.
 
+## Cheese Stack: a workout for your clicks
+
+Intermittent click problems are hard to reproduce on demand, so RodentGym includes a falling-block game that makes you use every input, quickly and often. Open it with **Gym › Cheese Stack** (⌘G) or the toolbar button.
+
+![Cheese Stack](docs/cheese-stack.png)
+
+- **Steer** with the pointer
+- **Left click** rotates ↺ and **right click** rotates ↻. Each button lights up when it arrives, so a missing click is obvious.
+- **Scroll** (wheel or two-finger) to drop the piece, and **flick** quickly (or middle-click) to slam it down
+- Keyboard works too: ← → ↑ Z X ↓ Space, P to pause
+
+The side panel counts every left and right click and scroll during the game, and shows how many clicks RodentGym caught being **dropped** while you played. A long game with *Dropped clicks 0* is a good sign. If secondary click is turned off on your mouse, the game tells you, because otherwise you'd only ever rotate one way.
+
 ## Requirements
 
 - macOS 14 Sonoma or later (developed on macOS 27)
@@ -73,7 +86,7 @@ Watching mouse click events doesn't normally need a permission prompt. If click 
 ## Limitations
 
 - Touch data comes from Apple's **private** MultitouchSupport framework, which isn't a supported API and could change in any macOS update.
-- Colour comes from the `ColorID` each accessory reports. Apple doesn't document it, but the values match the colour table in Apple's Continuity proximity-pairing messages ([furiousMAC/continuity](https://github.com/furiousMAC/continuity)): 0 White, 1 Black, 2 Red, 3 Blue, 4 Pink, 5 Grey, 6 Silver, 7 Gold, 8 Rose Gold, 9 Space Grey, 10 Dark Blue, 11 Light Blue, 12 Yellow. This has been confirmed on a white Magic Mouse 2 (0) and a space grey Magic Trackpad 2 (5). If a device is drawn in the wrong finish, override it in Settings, and please open an issue with the model and code.
+- Colour comes from the `ColorID` each accessory reports. Apple doesn't document it, but the values match the colour table in Apple's Continuity proximity-pairing messages ([furiousMAC/continuity](https://github.com/furiousMAC/continuity)): 0 White, 1 Black, 2 Red, 3 Blue, 4 Pink, 5 Grey, 6 Silver, 7 Gold, 8 Rose Gold, 9 Space Grey, 10 Dark Blue, 11 Light Blue, 12 Yellow. This has been confirmed on a white Magic Mouse 2 (0), a space grey Magic Trackpad 2 (5) and a space grey MacBook's built-in trackpad (9). If a device is drawn in the wrong finish, override it in Settings, and please open an issue with the model and code.
 - The trackpad corner area for secondary clicks is drawn approximately.
 - Model names are known for the Lightning-era Magic Mouse 2 and Magic Trackpad 2 and the first generation. Other models show their product ID.
 

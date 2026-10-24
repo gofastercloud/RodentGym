@@ -12,7 +12,7 @@ rm -rf "$APP" "$BUILD/AppIcon.iconset"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD/AppIcon.iconset"
 
 clang -fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=14.0 \
-  -o "$APP/Contents/MacOS/RodentGym" Sources/RodentGym.m \
+  -o "$APP/Contents/MacOS/RodentGym" Sources/RodentGym.m Sources/CheeseStack.m \
   -F/System/Library/PrivateFrameworks -framework MultitouchSupport \
   -framework Cocoa -framework IOKit -framework ApplicationServices
 
@@ -33,6 +33,7 @@ case "${1:-}" in
   --no-install) ;;
   --screenshot)
     "$APP/Contents/MacOS/RodentGym" --snapshot "$PWD/docs/screenshot.png" --demo
+    "$APP/Contents/MacOS/RodentGym" --snapshot-game "$PWD/docs/cheese-stack.png"
     echo "Wrote docs/screenshot.png" ;;
   *)
     pkill -x RodentGym 2>/dev/null || true

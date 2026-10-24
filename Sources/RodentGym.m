@@ -11,6 +11,7 @@
 // MIT License — see LICENSE.
 
 #import <Cocoa/Cocoa.h>
+#import "CheeseStack.h"
 #import <IOKit/IOKitLib.h>
 #import <IOKit/hid/IOHIDManager.h>
 #import <IOKit/hid/IOHIDKeys.h>
@@ -20,7 +21,7 @@
 #include <sys/sysctl.h>
 
 #define APP_NAME    @"RodentGym"
-#define APP_VERSION @"1.0"
+#define APP_VERSION @"1.1"
 #define LOG_PATH    [@"~/Library/Logs/RodentGym.log" stringByExpandingTildeInPath]
 
 #pragma mark - MultitouchSupport (private framework)
@@ -152,7 +153,7 @@ static const RGStyle kDarkStyle = {YES, 0.42, 0.43, 0.45};
 // Apple accessory colour codes, as reported in the IORegistry `ColorID` property. The same table
 // is used in Continuity proximity-pairing adverts (see furiousMAC/continuity, airpods_color_vals),
 // and macOS's CoreUtils carries the same ordered names. Verified: Magic Mouse 2 white = 0,
-// Magic Trackpad 2 space grey = 5.
+// Magic Trackpad 2 space grey = 5, space grey Apple silicon MacBook built-in trackpad = 9.
 typedef struct { int code; __unsafe_unretained NSString *name; RGStyle style; } RGColour;
 static const RGColour kColours[] = {
     {0,  @"White",      {NO,  0.86, 0.86, 0.87}},
@@ -437,7 +438,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
     __strong RGDevice *hidPendingDevice[4], *evtToucher[4];
     __strong NSString *hidPendingName[4];
     BOOL evtDown[4], anonHidDown[4];
-    long delivered[4], remappedTotal;
+    long delivered[4], remappedTotal, totalDrops;
     double lastDrop;
     NSString *lastDropText, *statusLine;
     NSMutableArray<NSString *> *lines;
@@ -451,6 +452,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
 }
 @property (strong) NSWindow *window, *settingsWindow, *helpWindow;
 @property (strong) RGView *view;
+@property (strong) RGCheeseStack *game;
 @property (strong) NSTextField *matchLabel;
 @property (strong) NSArray<RGDevice *> *devices;
 @property (strong) NSMutableDictionary *hidCache;
@@ -821,6 +823,9 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     [dev addItemWithTitle:@"Reset Counters" action:@selector(resetCounters:) keyEquivalent:@"k"];
     [dev addItemWithTitle:@"Open Log File" action:@selector(openLog:) keyEquivalent:@"l"];
 
+    NSMenu *gym = [self addMenu:@"Gym" to:bar];
+    [gym addItemWithTitle:@"Cheese Stack" action:@selector(showGame:) keyEquivalent:@"g"];
+
     NSMenu *win = [self addMenu:@"Window" to:bar];
     [win addItemWithTitle:@"Minimise" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
     [win addItemWithTitle:@"Close" action:@selector(performClose:) keyEquivalent:@"w"];
@@ -876,7 +881,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     for (NSView *v in [self.view.subviews copy]) [v removeFromSuperview];
     CGFloat x = MARGIN;
     NSArray *specs = @[@[@"Mouse Settings…", @"openMouseSettings:"], @[@"Trackpad Settings…", @"openTrackpadSettings:"],
-                       @[@"Reset Counters", @"resetCounters:"], @[@"RodentGym Settings…", @"showSettings:"]];
+                       @[@"Cheese Stack 🧀", @"showGame:"], @[@"RodentGym Settings…", @"showSettings:"]];
     for (NSArray *spec in specs) {
         NSButton *b = [NSButton buttonWithTitle:spec[0] target:self action:NSSelectorFromString(spec[1])];
         b.bezelStyle = NSBezelStylePush;
@@ -916,6 +921,23 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     remappedTotal = 0;
     lastDrop = 0;
     [self log:@"· Counters reset"];
+}
+
+- (void)showGame:(id)sender {
+    if (!self.game) {
+        self.game = [RGCheeseStack new];
+        __weak RGController *weakSelf = self;
+        self.game.droppedClicks = ^long { RGController *s = weakSelf; return s ? s->totalDrops : 0; };
+        self.game.inputWarning = ^NSString * {
+            for (RGDevice *d in weakSelf.devices)
+                if (d->kind == RGKindMouse && d.secondaryZone == 0)
+                    return [NSString stringWithFormat:@"Secondary click is off on %@, so right-clicks arrive as left. Turn it on with Mouse Settings… (⇧⌘M).", d.name];
+            return nil;
+        };
+    }
+    [self.game show];
+    [self applyWindowLevel];
+    [self activate];
 }
 
 - (void)showAbout:(id)sender {
@@ -1316,6 +1338,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
             hidPending[b] = 0;
             RGDevice *d = hidPendingDevice[b];
             if (d) d->dropped[b]++;
+            totalDrops++;
             lastDrop = now;
             lastDropText = [NSString stringWithFormat:@"%@ click dropped", kButtonName[b]];
             if ([NSUserDefaults.standardUserDefaults boolForKey:kDropSound]) [[NSSound soundNamed:@"Basso"] play];
@@ -1385,7 +1408,7 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     hidOK = tapOK = YES;
     statusLine = @"Memory free 58% · pressure normal · swap used 0.0 GB · button reports ok · click events ok";
     [lines addObjectsFromArray:@[
-        @"09:41:02 · RodentGym 1.0 started: button reports ok, click events ok",
+        [NSString stringWithFormat:@"09:41:02 · RodentGym %@ started: button reports ok, click events ok", APP_VERSION],
         @"09:41:02 · Devices: Magic Mouse (Magic Mouse 2 (Lightning), firmware 3.1.1); Magic Trackpad (Magic Trackpad 2 (Lightning), firmware 8.7.1)",
         @"09:41:09 ✓ Left click: Magic Mouse",
         @"09:41:11 ✓ Right click: Magic Trackpad (click or tap with two fingers)",
@@ -1412,6 +1435,9 @@ int main(int argc, const char *argv[]) {
         NSArray<NSString *> *args = NSProcessInfo.processInfo.arguments;
         NSUInteger i = [args indexOfObject:@"--render-icon"];
         if (i != NSNotFound && i + 1 < args.count) return writeIconPNG(args[i + 1], 1024) ? 0 : 1;
+
+        i = [args indexOfObject:@"--snapshot-game"];
+        if (i != NSNotFound && i + 1 < args.count) return [[RGCheeseStack new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
 
         RGController *controller = [RGController new];
         i = [args indexOfObject:@"--snapshot"];
