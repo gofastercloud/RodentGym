@@ -38,7 +38,11 @@ Each connected Magic Mouse and Magic Trackpad gets a card, and so does a MacBook
 - **Battery.** Level, and whether the device is charging, charged, plugged in or on battery.
 - **Sends.** The raw button reports from the device, before macOS processes them.
 
-Under the drawing are the model, firmware, connection, colour, and the settings the driver is applying right now. They come from the driver rather than System Settings, so they show what's really in effect.
+Under the drawing, small tags show the firmware, the connection (with signal strength when Bluetooth monitoring is on) and the colour. Below them are the settings the driver is applying right now: secondary click, the split or click options, and scrolling, plus the Bluetooth address or serial number. They come from the driver rather than System Settings, so they show what's really in effect.
+
+## Keyboards
+
+Each Apple keyboard gets a tile under the cards: a Magic Keyboard or Apple Wireless Keyboard, and the Mac's own keyboard while the lid is open. It shows the model, firmware, connection, layout and battery, including whether it's charging. Click the tile to open the **Keyboard Tester** with that keyboard chosen. Keyboards from other makers aren't shown.
 
 ## macOS delivers
 
@@ -111,7 +115,7 @@ On a Force Touch trackpad the click you feel is made by a haptic engine. Rest on
 
 # Keyboard Tester | keyboard | Every key, plus chatter, stuck keys and rollover
 
-Checks a Magic Keyboard, an older Apple Wireless Keyboard or your Mac's own keyboard. Open it from **Devices › Keyboard Tester** or press `⌘B`, then press every key once. Each key turns green as it works.
+Checks a Magic Keyboard, an older Apple Wireless Keyboard or your Mac's own keyboard. Other makers' keyboards aren't listed. Open it from **Devices › Keyboard Tester** or press `⌘B`, then press every key once. Each key turns green as it works.
 
 - **Chatter** is one press arriving as two, the usual sign of a worn or dirty switch. A key that releases and presses again within 30 ms is flagged orange.
 - **Stuck** keys are flagged when a key stays down for more than four seconds.
@@ -179,7 +183,7 @@ Off until you turn it on. The first time, macOS asks whether RodentGym may use B
 ## Everything else
 
 - **Keep RodentGym above other windows** keeps it visible while you click in other apps.
-- **Built-in trackpad.** Automatic shows a MacBook's own trackpad whenever the lid is open. Always show keeps the card, marked when the lid is closed.
+- **Built-in trackpad and keyboard.** Automatic shows a MacBook's own trackpad and keyboard whenever the lid is open. Always show keeps them, marked when the lid is closed.
 - **Dropped clicks.** Play a sound, and choose whether to log every click or only problems.
 - **Detection window.** How long RodentGym waits for a reported click to arrive before calling it dropped. The default is 400 ms. Raise it if you see false drops while the Mac is very busy.
 - **Device colours.** Each accessory reports a colour code, which RodentGym decodes. If a device is drawn in the wrong finish, override it here.

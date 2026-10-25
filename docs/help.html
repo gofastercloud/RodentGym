@@ -105,7 +105,9 @@
   <li><strong>Battery.</strong> Level, and whether the device is charging, charged, plugged in or on battery.</li>
   <li><strong>Sends.</strong> The raw button reports from the device, before macOS processes them.</li>
 </ul>
-<p>Under the drawing are the model, firmware, connection, colour, and the settings the driver is applying right now. They come from the driver rather than System Settings, so they show what's really in effect.</p>
+<p>Under the drawing, small tags show the firmware, the connection (with signal strength when Bluetooth monitoring is on) and the colour. Below them are the settings the driver is applying right now: secondary click, the split or click options, and scrolling, plus the Bluetooth address or serial number. They come from the driver rather than System Settings, so they show what's really in effect.</p>
+<h3 id="keyboards"><a class="heading-link" href="#keyboards">Keyboards</a></h3>
+<p>Each Apple keyboard gets a tile under the cards: a Magic Keyboard or Apple Wireless Keyboard, and the Mac's own keyboard while the lid is open. It shows the model, firmware, connection, layout and battery, including whether it's charging. Click the tile to open the <strong>Keyboard Tester</strong> with that keyboard chosen. Keyboards from other makers aren't shown.</p>
 <h3 id="macos-delivers"><a class="heading-link" href="#macos-delivers">macOS delivers</a></h3>
 <p>The bar under the cards shows the click events macOS hands to apps. A healthy click lights <strong>Sends</strong> on the card, then <strong>macOS delivers</strong> a moment later.</p>
 <h3 id="the-log"><a class="heading-link" href="#the-log">The log</a></h3>
@@ -172,7 +174,7 @@
 <h2 id="keyboard-tester-title"><a class="heading-link" href="#keyboard-tester">Keyboard Tester</a></h2>
 <p class="summary">Every key, plus chatter, stuck keys and rollover</p>
 </header>
-<p>Checks a Magic Keyboard, an older Apple Wireless Keyboard or your Mac's own keyboard. Open it from <strong>Devices › Keyboard Tester</strong> or press <code>⌘B</code>, then press every key once. Each key turns green as it works.</p>
+<p>Checks a Magic Keyboard, an older Apple Wireless Keyboard or your Mac's own keyboard. Other makers' keyboards aren't listed. Open it from <strong>Devices › Keyboard Tester</strong> or press <code>⌘B</code>, then press every key once. Each key turns green as it works.</p>
 <ul>
   <li><strong>Chatter</strong> is one press arriving as two, the usual sign of a worn or dirty switch. A key that releases and presses again within 30 ms is flagged orange.</li>
   <li><strong>Stuck</strong> keys are flagged when a key stays down for more than four seconds.</li>
@@ -248,7 +250,7 @@
 <h3 id="everything-else"><a class="heading-link" href="#everything-else">Everything else</a></h3>
 <ul>
   <li><strong>Keep RodentGym above other windows</strong> keeps it visible while you click in other apps.</li>
-  <li><strong>Built-in trackpad.</strong> Automatic shows a MacBook's own trackpad whenever the lid is open. Always show keeps the card, marked when the lid is closed.</li>
+  <li><strong>Built-in trackpad and keyboard.</strong> Automatic shows a MacBook's own trackpad and keyboard whenever the lid is open. Always show keeps them, marked when the lid is closed.</li>
   <li><strong>Dropped clicks.</strong> Play a sound, and choose whether to log every click or only problems.</li>
   <li><strong>Detection window.</strong> How long RodentGym waits for a reported click to arrive before calling it dropped. The default is 400 ms. Raise it if you see false drops while the Mac is very busy.</li>
   <li><strong>Device colours.</strong> Each accessory reports a colour code, which RodentGym decodes. If a device is drawn in the wrong finish, override it here.</li>

@@ -304,6 +304,23 @@ static NSString *modelName(int productID, RGKind kind) {
     return [NSString stringWithFormat:@"%@ (product 0x%04x)", kind == RGKindMouse ? @"Magic Mouse" : @"Magic Trackpad", productID];
 }
 
+// Battery status in words and the colour to show it in, shared by devices and keyboards.
+static NSString *powerStatusText(int battery, BOOL charging, BOOL charged, BOOL onCable, int lowWarn) {
+    if (battery < 0) return nil;
+    if (onCable && (charged || battery >= 100)) return @"Charged";
+    if (charging) return @"Charging";
+    if (onCable) return @"Plugged in";
+    if (battery <= MAX(5, lowWarn)) return @"Low battery";
+    return @"On battery";
+}
+
+static NSColor *batteryColourFor(int battery, BOOL charging, BOOL onCable, int lowWarn) {
+    if (charging || (onCable && battery >= 100)) return NSColor.systemGreenColor;
+    if (battery <= 10) return NSColor.systemRedColor;
+    if (battery <= MAX(20, lowWarn)) return NSColor.systemOrangeColor;
+    return NSColor.labelColor;
+}
+
 #pragma mark - Live visualisation model
 
 #define TRAIL_LEN  48
@@ -392,20 +409,28 @@ static double animNow(void) { return gFrozenTime > 0 ? gFrozenTime : CFAbsoluteT
 
 - (NSString *)key { return self.identifier ?: self.name; }
 
-- (NSString *)powerStatus {
-    if (battery < 0) return nil;
-    if (onCable && (charged || battery >= 100)) return @"Charged";
-    if (charging) return @"Charging";
-    if (onCable) return @"Plugged in";
-    if (battery <= MAX(5, lowWarn)) return @"Low battery";
-    return @"On battery";
-}
+- (NSString *)powerStatus { return powerStatusText(battery, charging, charged, onCable, lowWarn); }
+- (NSColor *)batteryColour { return batteryColourFor(battery, charging, onCable, lowWarn); }
 
-- (NSColor *)batteryColour {
-    if (charging || (onCable && battery >= 100)) return NSColor.systemGreenColor;
-    if (battery <= 10) return NSColor.systemRedColor;
-    if (battery <= MAX(20, lowWarn)) return NSColor.systemOrangeColor;
-    return NSColor.labelColor;
+// Settings as label and value rows for the card: @[label, value, @(warn)].
+- (NSArray<NSArray *> *)settingsRows {
+    int z = self.secondaryZone;
+    id dir = globalPref(@"com.apple.swipescrolldirection");
+    NSString *scroll = (dir == nil || [dir boolValue]) ? @"Natural" : @"Standard";
+    if (kind == RGKindMouse) {
+        NSString *secondary = z == 1 ? @"Right side" : z == 2 ? @"Left side (left-handed)" : @"Off: every click is a left click";
+        NSString *zoom = intOf(self.prefs[@"MouseOneFingerDoubleTapGesture"], 0) ? @"smart zoom on" : @"smart zoom off";
+        return @[@[@"Secondary", secondary, @(z == 0)],
+                 @[@"Split", z ? [NSString stringWithFormat:@"%d%% · %@", (int)lroundf(self.division * 100), zoom] : [zoom capitalizedString], @NO],
+                 @[@"Scrolling", [NSString stringWithFormat:@"%@ · speed %.1f", scroll, [globalPref(@"com.apple.mouse.scaling") doubleValue]], @NO]];
+    }
+    static NSString *const pressure[] = {@"light", @"medium", @"firm"};
+    int pr = MAX(0, MIN(2, intOf(self.prefs[@"FirstClickThreshold"], 1)));
+    NSString *secondary = z == 1 ? @"Two fingers" : z == 2 ? @"Bottom-right corner" : z == 3 ? @"Bottom-left corner" : @"Off";
+    NSString *clicking = [NSString stringWithFormat:@"Tap %@ · %@ · Force Click %@", intOf(self.prefs[@"Clicking"], 0) ? @"on" : @"off",
+                          pressure[pr], [globalPref(@"com.apple.trackpad.forceClick") boolValue] ? @"on" : @"off"];
+    return @[@[@"Secondary", secondary, @(z == 0)], @[@"Clicking", clicking, @NO],
+             @[@"Scrolling", [NSString stringWithFormat:@"%@ · speed %.1f", scroll, [globalPref(@"com.apple.trackpad.scaling") doubleValue]], @NO]];
 }
 
 - (void)addPing:(int)pingKind at:(NSPoint)p {
@@ -591,6 +616,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
 #define MARGIN    20.0
 #define DELIVER_H 72.0
 #define LOG_H     150.0
+#define KB_H      96.0    // a keyboard tile
 
 @class RGView;
 
@@ -611,7 +637,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
     BOOL tapOK, hidOK;
     CFMutableArrayRef mtList;
     IONotificationPortRef notifyPort;
-    io_iterator_t addIter, removeIter;
+    io_iterator_t addIter, removeIter, kbAddIter, kbRemoveIter;
     int statusTicks;
     BOOL lidIsClosed;
 }
@@ -626,6 +652,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
 @property (strong) RGLatencyMonitor *monitor;
 @property (strong) RGSelfTest *selfTest;
 @property (strong) RGKeyboardTester *keyboardTester;
+@property (copy) NSArray<NSDictionary *> *keyboards;   // Apple keyboards, with battery from the power sources
 @property (strong) RGBluetoothMonitor *bluetooth;
 @property (strong) NSButton *bluetoothCheckbox;
 @property (strong) NSTextField *bluetoothNote;
@@ -643,6 +670,11 @@ static BOOL writeIconPNG(NSString *path, int px) {
 @property (copy) NSString *snapshotPath, *windowShotsDir;
 @property BOOL demo, live;
 - (NSArray<RGDevice *> *)visibleDevices;
+- (NSArray<NSDictionary *> *)visibleKeyboards;
+- (CGFloat)keyboardRowHeight;
+- (void)finishName:(NSString *_Nullable *_Nonnull)name swatch:(NSColor *_Nullable *_Nonnull)swatch for:(RGDevice *)d;
+- (void)showKeyboardTester:(id)sender;
+- (void)refreshKeyboards;
 - (RGStyle)styleFor:(RGDevice *)d;
 - (NSString *)colourTextFor:(RGDevice *)d;
 - (double)matchWindow;
@@ -652,9 +684,6 @@ static BOOL writeIconPNG(NSString *path, int px) {
 - (void)rescanDevices:(id)sender;
 - (void)refreshBatteryAndColour;
 - (void)setDivision:(int)percent forDevice:(RGDevice *)d;
-- (void)openPointingDevice:(IOHIDDeviceRef)dev;
-- (void)closePointingDevice:(IOHIDDeviceRef)dev;
-@property (strong) NSMutableSet<NSValue *> *openHID;
 @end
 
 #define MIN_DIVISION 35   // limits for the Magic Mouse split, in percent across the mouse
@@ -667,14 +696,6 @@ static void hidCallback(void *ctx, IOReturn result, void *sender, IOHIDValueRef 
     if (usage < 1 || usage > 3) return;
     [(__bridge RGController *)ctx hidButton:(int)usage down:IOHIDValueGetIntegerValue(value) != 0 device:IOHIDElementGetDevice(el)
                                       stamp:IOHIDValueGetTimeStamp(value)];
-}
-
-static void hidDeviceMatched(void *ctx, IOReturn result, void *sender, IOHIDDeviceRef dev) {
-    [(__bridge RGController *)ctx openPointingDevice:dev];
-}
-
-static void hidDeviceRemoved(void *ctx, IOReturn result, void *sender, IOHIDDeviceRef dev) {
-    [(__bridge RGController *)ctx closePointingDevice:dev];
 }
 
 static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef ev, void *ctx) {
@@ -696,6 +717,14 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRe
 
 static void powerSourcesChanged(void *context) { [(__bridge RGController *)context refreshBatteryAndColour]; }
 
+static void keyboardsChangedCallback(void *refcon, io_iterator_t it) {
+    io_object_t o;
+    while ((o = IOIteratorNext(it))) IOObjectRelease(o);
+    RGController *c = (__bridge RGController *)refcon;
+    [NSObject cancelPreviousPerformRequestsWithTarget:c selector:@selector(refreshKeyboards) object:nil];
+    [c performSelector:@selector(refreshKeyboards) withObject:nil afterDelay:1.0];   // let the registry fill in
+}
+
 static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     io_object_t o;
     while ((o = IOIteratorNext(it))) IOObjectRelease(o);
@@ -705,6 +734,45 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 }
 
 #pragma mark - Main view
+
+static NSString *transportSymbol(NSString *transport) {
+    if ([transport isEqual:@"Bluetooth"] || [transport hasPrefix:@"Bluetooth"]) return @"antenna.radiowaves.left.and.right";
+    if ([transport isEqual:@"USB"]) return @"cable.connector";
+    return @"laptopcomputer";
+}
+
+// A small capsule with an SF Symbol (or a colour swatch) and a label. Returns the width it took,
+// including spacing, or 0 if it wouldn't fit before maxX.
+static CGFloat drawChip(NSString *symbol, NSString *label, NSColor *swatch, CGFloat x, CGFloat y, CGFloat maxX) {
+    NSFont *f = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    CGFloat tw = ceil([label sizeWithAttributes:@{NSFontAttributeName: f}].width);
+    NSImage *img = nil;
+    if (symbol && !swatch) {
+        NSImageSymbolConfiguration *cfg = [[NSImageSymbolConfiguration configurationWithPointSize:10 weight:NSFontWeightMedium]
+            configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:NSColor.secondaryLabelColor]];
+        img = [RGSymbol(symbol, label) imageWithSymbolConfiguration:cfg];
+    }
+    CGFloat iw = swatch ? 10 : img ? img.size.width : 0;
+    CGFloat w = 8 + (iw > 0 ? iw + 5 : 0) + tw + 9;
+    if (x + w > maxX) return 0;
+    NSRect r = NSMakeRect(x, y, w, 20);
+    [[NSColor.labelColor colorWithAlphaComponent:0.07] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:r xRadius:10 yRadius:10] fill];
+    CGFloat ix = x + 8;
+    if (swatch) {
+        NSBezierPath *dot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(ix, y + 5, 10, 10)];
+        [swatch setFill];
+        [dot fill];
+        dot.lineWidth = 0.75;
+        [[NSColor.labelColor colorWithAlphaComponent:0.3] setStroke];
+        [dot stroke];
+    } else if (img) {
+        [img drawInRect:NSMakeRect(ix, y + 10 - img.size.height / 2, img.size.width, img.size.height) fromRect:NSZeroRect
+              operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+    }
+    RGDrawText(label, NSMakeRect(ix + (iw > 0 ? iw + 5 : 0), y + 3, tw + 2, 15), f, NSColor.labelColor, NSTextAlignmentLeft);
+    return w + 6;
+}
 
 @interface RGView : NSView
 @property (weak) RGController *c;
@@ -728,6 +796,8 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 }
 
 - (void)resetCursorRects {
+    for (NSUInteger i = 0; i < self.c.visibleKeyboards.count; i++)
+        [self addCursorRect:[self keyboardRect:i] cursor:NSCursor.pointingHandCursor];
     for (RGDevice *d in self.c.visibleDevices)
         if ([self hasDraggableSplit:d])
             [self addCursorRect:NSMakeRect([self splitXFor:d] - 7, d->surfaceRect.origin.y, 14, d->surfaceRect.size.height)
@@ -736,6 +806,9 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 
 - (void)mouseDown:(NSEvent *)e {
     NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    NSArray<NSDictionary *> *kbs = self.c.visibleKeyboards;
+    for (NSUInteger i = 0; i < kbs.count; i++)
+        if (NSPointInRect(p, [self keyboardRect:i])) { [self.c showKeyboardTester:kbs[i][@"key"]]; return; }
     for (RGDevice *d in self.c.visibleDevices) {
         if (![self hasDraggableSplit:d]) continue;
         if (fabs(p.x - [self splitXFor:d]) <= 7 && NSMinY(d->surfaceRect) <= p.y && p.y <= NSMaxY(d->surfaceRect)) {
@@ -790,8 +863,13 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
 - (NSRect)cardRect:(NSUInteger)i {
     return NSMakeRect(MARGIN + i * (CARD_W + MARGIN), self.c.topInset + 12, CARD_W, CARD_H);
 }
+- (NSRect)keyboardRect:(NSUInteger)i {
+    NSUInteger n = MAX(1, self.c.visibleKeyboards.count);
+    CGFloat w = (self.bounds.size.width - (n + 1) * MARGIN) / n;
+    return NSMakeRect(MARGIN + i * (w + MARGIN), self.c.topInset + 12 + CARD_H + MARGIN, w, KB_H);
+}
 - (NSRect)deliveredRect {
-    return NSMakeRect(MARGIN, self.c.topInset + 12 + CARD_H + MARGIN, self.bounds.size.width - 2 * MARGIN, DELIVER_H);
+    return NSMakeRect(MARGIN, self.c.topInset + 12 + CARD_H + MARGIN + self.c.keyboardRowHeight, self.bounds.size.width - 2 * MARGIN, DELIVER_H);
 }
 - (NSRect)logRect {
     NSRect d = self.deliveredRect;
@@ -808,6 +886,8 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
         RGDrawText(@"No Magic Mouse or Magic Trackpad found", NSInsetRect([self cardRect:0], 0, CARD_H / 2 - 10),
                    [NSFont systemFontOfSize:14], NSColor.secondaryLabelColor, NSTextAlignmentCenter);
     for (NSUInteger i = 0; i < devs.count; i++) [self drawCard:devs[i] in:[self cardRect:i]];
+    NSArray<NSDictionary *> *kbs = c.visibleKeyboards;
+    for (NSUInteger i = 0; i < kbs.count; i++) [self drawKeyboard:kbs[i] in:[self keyboardRect:i]];
     [self drawDelivered:self.deliveredRect];
     [self drawLog:self.logRect];
 }
@@ -850,39 +930,96 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     RGDrawLight(NSMakeRect(x + 56, ly, lw, 30), @"Left", d->hidDown[1], NSColor.systemGreenColor);
     RGDrawLight(NSMakeRect(x + 56 + lw + 8, ly, lw, 30), @"Right", d->hidDown[2], NSColor.systemGreenColor);
 
-    // Hardware details and the settings the driver is applying
-    NSMutableArray *hw = [NSMutableArray array];
-    if (d.firmware) [hw addObject:[@"Firmware " stringByAppendingString:d.firmware]];
-    if (d.transport) [hw addObject:d->rssi ? [NSString stringWithFormat:@"%@ %d dBm", d.transport, d->rssi] : d.transport];
-    if (d.identifier.length && !c.demo) [hw addObject:d.identifier];
-    NSMutableArray *info = [NSMutableArray arrayWithObject:hw.count ? [hw componentsJoinedByString:@" · "] : @"No hardware details reported"];
-    [info addObject:[c colourTextFor:d]];
-    [info addObjectsFromArray:d.settingsLines];
-    CGFloat ty = ly + 42;
-    NSFont *f = [NSFont systemFontOfSize:11];
-    for (NSString *l in info) {
-        BOOL warn = [l hasPrefix:@"Secondary click: Off"];
-        RGDrawText(l, NSMakeRect(x, ty, iw, 15), warn ? [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold] : f,
-                   warn ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor, NSTextAlignmentLeft);
-        ty += 15.5;
+    // Hardware at a glance: firmware, connection (with signal when monitored) and finish
+    CGFloat cx = x, cy = ly + 40;
+    if (d.firmware) cx += drawChip(@"cpu", d.firmware, nil, cx, cy, x + iw);
+    if (d.transport) cx += drawChip(transportSymbol(d.transport),
+                                    d->rssi ? [NSString stringWithFormat:@"%@ · %d dBm", d.transport, d->rssi] : d.transport, nil, cx, cy, x + iw);
+    NSString *finish = nil;
+    NSColor *swatch = nil;
+    [c finishName:&finish swatch:&swatch for:d];
+    if (finish) cx += drawChip(nil, finish, swatch, cx, cy, x + iw);
+
+    // The settings the driver is applying, as a small table
+    NSMutableArray *rows = [d.settingsRows mutableCopy];
+    if (d.identifier.length && !c.demo)
+        [rows addObject:@[[d.transport isEqual:@"Bluetooth"] ? @"Address" : @"Serial", d.identifier, @NO, @YES]];
+    CGFloat ty = cy + 28;
+    for (NSArray *r in rows) {
+        BOOL warn = [r[2] boolValue], mono = r.count > 3;
+        RGDrawText(r[0], NSMakeRect(x, ty, 66, 15), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor, NSTextAlignmentLeft);
+        NSFont *vf = warn ? [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold]
+                   : mono ? [NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightRegular] : [NSFont systemFontOfSize:11];
+        RGDrawText(r[1], NSMakeRect(x + 70, ty, iw - 70, 15), vf, warn ? NSColor.systemOrangeColor : NSColor.labelColor, NSTextAlignmentLeft);
+        ty += 16;
     }
     NSFont *mono = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
-    text([NSString stringWithFormat:@"Sent  L %ld  R %ld", d->sent[1], d->sent[2]], x, ty + 3, mono, NSColor.labelColor);
+    CGFloat fy = card.origin.y + CARD_H - 22;
+    [[NSColor.separatorColor colorWithAlphaComponent:0.6] setFill];
+    NSRectFillUsingOperation(NSMakeRect(x, fy - 6, iw, 1), NSCompositingOperationSourceOver);
+    text([NSString stringWithFormat:@"Sent  L %ld  R %ld", d->sent[1], d->sent[2]], x, fy, mono, NSColor.labelColor);
     long drops = d->dropped[1] + d->dropped[2] + d->dropped[3];
-    rtext([NSString stringWithFormat:@"Dropped  L %ld  R %ld", d->dropped[1], d->dropped[2]], x + iw, ty + 3,
+    rtext([NSString stringWithFormat:@"Dropped  L %ld  R %ld", d->dropped[1], d->dropped[2]], x + iw, fy,
           drops ? [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightBold] : mono, drops ? NSColor.systemRedColor : NSColor.labelColor);
+}
+
+// A keyboard tile: a small drawing, name and model, connection details, battery, and a way into
+// the Keyboard Tester (clicking anywhere on the tile opens it).
+- (void)drawKeyboard:(NSDictionary *)k in:(NSRect)t {
+    RGController *c = self.c;
+    RGDrawCard(t, 16);
+    CGFloat x = t.origin.x + 16, y = t.origin.y, right = NSMaxX(t) - 16;
+    BOOL builtIn = [k[@"builtIn"] boolValue], lidShut = builtIn && c->lidIsClosed;
+    if (t.size.width >= 420) {
+        NSRect thumb = NSMakeRect(x, y + 14, 150, KB_H - 28);
+        RGDrawKeyboardThumbnail(k, thumb);
+        if (lidShut) {
+            [[NSColor.windowBackgroundColor colorWithAlphaComponent:0.7] setFill];
+            NSRectFillUsingOperation(thumb, NSCompositingOperationSourceOver);
+        }
+        x += 168;
+    }
+    BOOL hasBattery = k[@"battery"] != nil;
+    CGFloat textW = right - x - (hasBattery || lidShut ? 104 : 0);
+    RGDrawText(k[@"name"] ?: @"Keyboard", NSMakeRect(x, y + 14, textW, 20), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],
+               NSColor.labelColor, NSTextAlignmentLeft);
+    NSString *model = k[@"years"] ? [NSString stringWithFormat:@"%@ · %@", k[@"model"], k[@"years"]] : k[@"model"];
+    RGDrawText(model ?: @"", NSMakeRect(x, y + 35, textW, 16), [NSFont systemFontOfSize:11], NSColor.secondaryLabelColor, NSTextAlignmentLeft);
+    NSString *link = @"Keyboard Tester ⌘B ›";
+    NSFont *lf = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    CGFloat lw = [link sizeWithAttributes:@{NSFontAttributeName: lf}].width + 2;
+    CGFloat cx = x, cy = y + KB_H - 32;
+    if (k[@"firmware"]) cx += drawChip(@"cpu", k[@"firmware"], nil, cx, cy, right - lw - 12);
+    if (k[@"transport"]) cx += drawChip(transportSymbol(k[@"transport"]), k[@"transport"], nil, cx, cy, right - lw - 12);
+    if (k[@"family"]) {
+        static NSString *const families[] = {@"ANSI", @"ISO", @"JIS"};
+        cx += drawChip(@"keyboard", families[MAX(0, MIN(2, [k[@"family"] intValue]))], nil, cx, cy, right - lw - 12);
+    }
+    RGDrawText(link, NSMakeRect(right - lw, cy + 2, lw, 16), lf, NSColor.linkColor, NSTextAlignmentRight);
+    if (lidShut) {
+        RGDrawText(@"Lid closed", NSMakeRect(right - 104, y + 15, 104, 18), [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],
+                   NSColor.secondaryLabelColor, NSTextAlignmentRight);
+    } else if (hasBattery) {
+        int level = [k[@"battery"] intValue], low = k[@"lowWarn"] ? [k[@"lowWarn"] intValue] : 20;
+        BOOL charging = [k[@"charging"] boolValue], onCable = [k[@"onCable"] boolValue];
+        [self drawBatteryLevel:level charging:charging onCable:onCable status:k[@"powerStatus"]
+                        colour:batteryColourFor(level, charging, onCable, low) topRight:NSMakePoint(right, y + 14)];
+    }
 }
 
 // Battery glyph (level, with a bolt while charging), percentage and status, right-aligned.
 - (void)drawBattery:(RGDevice *)d topRight:(NSPoint)tr {
-    int level = d->battery;
-    NSString *symbol = d->charging ? @"battery.100percent.bolt"
+    [self drawBatteryLevel:d->battery charging:d->charging onCable:d->onCable status:d.powerStatus colour:d.batteryColour topRight:tr];
+}
+
+- (void)drawBatteryLevel:(int)level charging:(BOOL)charging onCable:(BOOL)onCable status:(NSString *)status
+                  colour:(NSColor *)colour topRight:(NSPoint)tr {
+    NSString *symbol = charging ? @"battery.100percent.bolt"
                      : level >= 88 ? @"battery.100percent" : level >= 63 ? @"battery.75percent"
                      : level >= 38 ? @"battery.50percent" : level >= 13 ? @"battery.25percent" : @"battery.0percent";
-    NSColor *colour = d.batteryColour;
     NSImageSymbolConfiguration *cfg = [[NSImageSymbolConfiguration configurationWithPointSize:15 weight:NSFontWeightRegular]
         configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:colour]];
-    NSImage *img = [RGSymbol(symbol, d.powerStatus) imageWithSymbolConfiguration:cfg];
+    NSImage *img = [RGSymbol(symbol, status ?: @"Battery") imageWithSymbolConfiguration:cfg];
     NSFont *pctFont = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightSemibold];
     NSString *pct = [NSString stringWithFormat:@"%d%%", level];
     CGFloat pw = [pct sizeWithAttributes:@{NSFontAttributeName: pctFont}].width;
@@ -890,9 +1027,9 @@ static void devicesChangedCallback(void *refcon, io_iterator_t it) {
     NSRect imgRect = NSMakeRect(tr.x - is.width, tr.y + 10 - is.height / 2, is.width, is.height);
     [img drawInRect:imgRect fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
     RGDrawText(pct, NSMakeRect(imgRect.origin.x - pw - 6, tr.y + 1, pw + 2, 18), pctFont,
-               d->charging || level > 20 ? NSColor.labelColor : colour, NSTextAlignmentRight);
-    RGDrawText(d.powerStatus ?: @"", NSMakeRect(tr.x - 96, tr.y + 21, 96, 15), [NSFont systemFontOfSize:11],
-               d->charging || d->onCable ? NSColor.systemGreenColor : (level <= 20 ? colour : NSColor.secondaryLabelColor), NSTextAlignmentRight);
+               charging || level > 20 ? NSColor.labelColor : colour, NSTextAlignmentRight);
+    RGDrawText(status ?: @"", NSMakeRect(tr.x - 96, tr.y + 21, 96, 15), [NSFont systemFontOfSize:11],
+               charging || onCable ? NSColor.systemGreenColor : (level <= 20 ? colour : NSColor.secondaryLabelColor), NSTextAlignmentRight);
 }
 
 - (void)drawZones:(RGDevice *)d surface:(NSRect)s dark:(BOOL)dark {
@@ -1152,6 +1289,13 @@ static double easeOutCubic(double t) { return 1 - pow(1 - t, 3); }
                            d->sent[1], d->sent[2], d->dropped[1] + d->dropped[2]];
         [a addObject:[self element:label frame:[self cardRect:i]]];
     }
+    NSArray<NSDictionary *> *kbs = c.visibleKeyboards;
+    for (NSUInteger i = 0; i < kbs.count; i++) {
+        NSDictionary *k = kbs[i];
+        NSString *battery = k[@"battery"] ? [NSString stringWithFormat:@" Battery %@ percent, %@.", k[@"battery"], [k[@"powerStatus"] lowercaseString] ?: @""] : @"";
+        [a addObject:[self element:[NSString stringWithFormat:@"%@, %@.%@ Click to open the Keyboard Tester.", k[@"name"], k[@"model"], battery]
+                             frame:[self keyboardRect:i]]];
+    }
     [a addObject:[self element:[NSString stringWithFormat:@"macOS delivers: %@. %ld left and %ld right clicks delivered, %ld remapped.",
                                 c->evtDown[1] ? @"left down" : c->evtDown[2] ? @"right down" : @"no button down",
                                 c->delivered[1], c->delivered[2], c->remappedTotal] frame:self.deliveredRect]];
@@ -1185,6 +1329,81 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     NSMutableArray *a = [NSMutableArray array];
     for (RGDevice *d in self.devices) if (d->kind != RGKindBuiltIn || showBuiltIn) [a addObject:d];
     return a;
+}
+
+// Apple keyboards to show: the built-in one follows the same lid rule as the built-in trackpad.
+- (NSArray<NSDictionary *> *)visibleKeyboards {
+    BOOL showBuiltIn = self.showBuiltIn && !self.demo;
+    NSMutableArray *a = [NSMutableArray array];
+    for (NSDictionary *k in self.keyboards) if (![k[@"builtIn"] boolValue] || showBuiltIn) [a addObject:k];
+    return a;
+}
+
+- (CGFloat)keyboardRowHeight { return self.visibleKeyboards.count ? KB_H + MARGIN : 0; }
+
+// Re-reads the keyboards and their batteries, logging connects, disconnects and charging changes.
+- (void)refreshKeyboards {
+    NSArray *list;
+    if (self.demo) {
+        list = @[@{@"name": @"Magic Keyboard", @"key": @"demo-keyboard", @"model": @"Magic Keyboard with Touch ID", @"years": @"2021",
+                   @"layout": @"compact_%@_2021", @"family": @0, @"topKey": @"touchid", @"globe": @YES, @"transport": @"Bluetooth",
+                   @"firmware": @"2.0.6", @"battery": @91, @"powerStatus": @"On battery", @"builtIn": @NO}];
+    } else {
+        NSDictionary *power = accessoryPowerSources();
+        NSMutableArray *m = [NSMutableArray array];
+        for (NSDictionary *k in RGConnectedKeyboards(NO)) {
+            NSMutableDictionary *d = [k mutableCopy];
+            NSDictionary *ps = [k[@"builtIn"] boolValue] ? nil
+                : (k[@"serial"] ? power[[@"id:" stringByAppendingString:[k[@"serial"] uppercaseString]]] : nil) ?: power[[@"name:" stringByAppendingString:k[@"name"]]];
+            int level = k[@"battery"] ? [k[@"battery"] intValue] : -1, low = 20;
+            BOOL charging = NO, charged = NO, onCable = NO;
+            if (ps) {
+                level = [ps[@"Current Capacity"] intValue];
+                charging = [ps[@"Is Charging"] boolValue];
+                charged = [ps[@"Is Charged"] boolValue];
+                onCable = [ps[@"Power Source State"] isEqual:@"AC Power"];
+                if (ps[@"Low Warn Level"]) low = [ps[@"Low Warn Level"] intValue];
+            }
+            if (level >= 0) {
+                d[@"battery"] = @(level);
+                d[@"charging"] = @(charging);
+                d[@"onCable"] = @(onCable);
+                d[@"lowWarn"] = @(low);
+                d[@"powerStatus"] = powerStatusText(level, charging, charged, onCable, low);
+            }
+            [m addObject:d];
+        }
+        list = m;
+    }
+    if (self.live && self.keyboards) {
+        NSMutableDictionary *before = [NSMutableDictionary dictionary], *after = [NSMutableDictionary dictionary];
+        for (NSDictionary *k in self.keyboards) if (![k[@"builtIn"] boolValue]) before[k[@"key"]] = k;
+        for (NSDictionary *k in list) if (![k[@"builtIn"] boolValue]) after[k[@"key"]] = k;
+        for (NSString *key in before) if (!after[key]) [self log:[NSString stringWithFormat:@"· %@ disconnected", before[key][@"name"]]];
+        for (NSString *key in after) {
+            NSDictionary *b = before[key], *a = after[key];
+            if (!b) [self log:[NSString stringWithFormat:@"· %@ connected", a[@"name"]]];
+            else if (b[@"powerStatus"] && a[@"powerStatus"] && ![b[@"powerStatus"] isEqual:a[@"powerStatus"]])
+                [self log:[NSString stringWithFormat:@"· %@: %@ (%@%%)", a[@"name"], [a[@"powerStatus"] lowercaseString], a[@"battery"]]];
+        }
+    }
+    NSUInteger shown = self.visibleKeyboards.count;
+    self.keyboards = list;
+    if (self.visibleKeyboards.count != shown) [self relayout];
+    else self.view.needsDisplay = YES;
+}
+
+// The colour name and a swatch for the card's finish chip.
+- (void)finishName:(NSString **)name swatch:(NSColor **)swatch for:(RGDevice *)d {
+    *name = nil;
+    *swatch = nil;
+    if (d->colorID < 0) return;
+    NSString *override = [self finishOverrideFor:d];
+    RGStyle style = [self styleFor:d];
+    *swatch = style.darkTop ? rgb(0.22, 0.22, 0.24) : rgb(style.rimR, style.rimG, style.rimB);
+    if (override) { *name = [override isEqualToString:@"black"] ? @"Black" : @"White"; return; }
+    const RGColour *c = colourForCode(d->colorID);
+    *name = c ? [c->name componentsSeparatedByString:@" / "].firstObject : [NSString stringWithFormat:@"Colour %d", d->colorID];
 }
 
 - (NSString *)finishOverrideFor:(RGDevice *)d {
@@ -1225,7 +1444,6 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     self.live = !self.snapshotPath && !self.demo;
     lidIsClosed = lidClosed();
     self.hidCache = [NSMutableDictionary dictionary];
-    self.openHID = [NSMutableSet set];
     self.lastSecondary = [NSMutableDictionary dictionary];
     self.shortFmt = [NSDateFormatter new];
     self.shortFmt.dateFormat = @"HH:mm:ss";
@@ -1497,19 +1715,20 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 - (void)relayout {
     NSUInteger n = MAX(1, self.visibleDevices.count);
     CGFloat w = MAX(660, n * CARD_W + (n + 1) * MARGIN);
-    CGFloat h = self.topInset + 12 + CARD_H + MARGIN + DELIVER_H + MARGIN + LOG_H + MARGIN;
+    CGFloat h = self.topInset + 12 + CARD_H + MARGIN + self.keyboardRowHeight + DELIVER_H + MARGIN + LOG_H + MARGIN;
     NSRect old = self.window.frame;
     NSRect frame = [self.window frameRectForContentRect:NSMakeRect(0, 0, w, h)];
     frame.origin = NSMakePoint(old.origin.x, NSMaxY(old) - frame.size.height);
     [self.window setFrame:frame display:YES];
     // The toolbar height is only final once the window has its size; recompute once.
-    CGFloat h2 = self.topInset + 12 + CARD_H + MARGIN + DELIVER_H + MARGIN + LOG_H + MARGIN;
+    CGFloat h2 = self.topInset + 12 + CARD_H + MARGIN + self.keyboardRowHeight + DELIVER_H + MARGIN + LOG_H + MARGIN;
     if (fabs(h2 - h) > 0.5) {
         frame = [self.window frameRectForContentRect:NSMakeRect(0, 0, w, h2)];
         frame.origin = NSMakePoint(old.origin.x, NSMaxY(old) - frame.size.height);
         [self.window setFrame:frame display:YES];
     }
     [self positionToast];
+    [self.window invalidateCursorRectsForView:self.view];
     self.view.needsDisplay = YES;
 }
 
@@ -1607,8 +1826,10 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         self.keyboardTester = [RGKeyboardTester new];
         __weak RGController *weakSelf = self;
         self.keyboardTester.log = ^(NSString *line) { [weakSelf log:line]; };
+        self.keyboardTester.keyboardList = ^NSArray<NSDictionary *> * { return weakSelf.visibleKeyboards; };
     }
-    [self.keyboardTester show];
+    if ([sender isKindOfClass:NSString.class]) [self.keyboardTester showKeyboard:sender];
+    else [self.keyboardTester show];
     [self applyWindowLevel];
     [self activate];
 }
@@ -1846,8 +2067,8 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     [builtIn selectItemAtIndex:MIN(2, MAX(0, [ud integerForKey:kBuiltInMode]))];
     builtIn.target = self;
     builtIn.action = @selector(builtInModeChanged:);
-    builtIn.accessibilityLabel = @"Built-in trackpad";
-    [grid addRowWithViews:@[[self formLabel:@"Built-in trackpad:"], builtIn]];
+    builtIn.accessibilityLabel = @"Built-in trackpad and keyboard";
+    [grid addRowWithViews:@[[self formLabel:@"Built-in trackpad and keyboard:"], builtIn]];
 
     NSGridRow *spacer;
     if (self.splitMouse) {
@@ -2080,6 +2301,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         if (self.live && before && after && ![before isEqualToString:after])
             [self log:[NSString stringWithFormat:@"· %@: %@ (%d%%)", d.name, after.lowercaseString, d->battery]];
     }
+    [self refreshKeyboards];
     self.view.needsDisplay = YES;
 }
 
@@ -2112,51 +2334,35 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     IOServiceAddMatchingNotification(notifyPort, kIOTerminatedNotification, IOServiceMatching("AppleMultitouchDevice"),
                                      devicesChangedCallback, (__bridge void *)self, &removeIter);
     while ((o = IOIteratorNext(removeIter))) IOObjectRelease(o);
+    // Keyboards, for the keyboard tiles (read from the registry only; never opened)
+    for (int i = 0; i < 2; i++) {
+        NSDictionary *kb = @{@kIOProviderClassKey: @kIOHIDDeviceKey,
+                             @kIOHIDPrimaryUsagePageKey: @(kHIDPage_GenericDesktop), @kIOHIDPrimaryUsageKey: @(kHIDUsage_GD_Keyboard)};
+        io_iterator_t *iter = i ? &kbRemoveIter : &kbAddIter;
+        IOServiceAddMatchingNotification(notifyPort, i ? kIOTerminatedNotification : kIOFirstMatchNotification,
+                                         (__bridge_retained CFDictionaryRef)kb, keyboardsChangedCallback, (__bridge void *)self, iter);
+        while ((o = IOIteratorNext(*iter))) IOObjectRelease(o);
+    }
 }
 
 #pragma mark Button reports and click events
 
 - (void)setupHID {
     hid = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-    NSArray *matches = @[@{@kIOHIDVendorIDKey: @0x004c},
+    // Button reports come from each device's mouse interface (primary usage Generic Desktop / Mouse),
+    // so that is all that is matched, plus the Magic Trackpads over USB by product ID. Matching on
+    // primary usage keeps keyboards out: a keyboard's primary usage is Keyboard, even when it also
+    // has a mouse collection, so IOHIDManagerOpen never opens one.
+    NSArray *matches = @[@{@kIOHIDPrimaryUsagePageKey: @(kHIDPage_GenericDesktop), @kIOHIDPrimaryUsageKey: @(kHIDUsage_GD_Mouse)},
                          @{@kIOHIDVendorIDKey: @0x05ac, @kIOHIDProductIDKey: @0x0265},
-                         @{@kIOHIDVendorIDKey: @0x05ac, @kIOHIDProductIDKey: @0x030e},
-                         @{@kIOHIDDeviceUsagePageKey: @(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey: @(kHIDUsage_GD_Mouse)}];
+                         @{@kIOHIDVendorIDKey: @0x05ac, @kIOHIDProductIDKey: @0x030e}];
     IOHIDManagerSetDeviceMatchingMultiple(hid, (__bridge CFArrayRef)matches);
-    // The manager itself is never opened, because that would open every matching device, including
-    // a Bluetooth Magic Keyboard. Each pointing device is opened on its own as it appears, and
-    // anything that is a keyboard or keypad is left alone.
-    IOHIDManagerRegisterDeviceMatchingCallback(hid, hidDeviceMatched, (__bridge void *)self);
-    IOHIDManagerRegisterDeviceRemovalCallback(hid, hidDeviceRemoved, (__bridge void *)self);
+    IOHIDManagerRegisterInputValueCallback(hid, hidCallback, (__bridge void *)self);
     IOHIDManagerScheduleWithRunLoop(hid, CFRunLoopGetMain(), kCFRunLoopCommonModes);
+    IOHIDManagerOpen(hid, kIOHIDOptionsTypeNone);
     CFSetRef set = IOHIDManagerCopyDevices(hid);
-    if (set) {
-        for (id dev in (__bridge NSSet *)set) [self openPointingDevice:(__bridge IOHIDDeviceRef)dev];
-        CFRelease(set);
-    }
-}
-
-- (void)openPointingDevice:(IOHIDDeviceRef)dev {
-    if (IOHIDDeviceConformsTo(dev, kHIDPage_GenericDesktop, kHIDUsage_GD_Keyboard) ||
-        IOHIDDeviceConformsTo(dev, kHIDPage_GenericDesktop, kHIDUsage_GD_Keypad)) return;   // never a keyboard
-    NSValue *key = [NSValue valueWithPointer:dev];
-    if ([self.openHID containsObject:key]) return;
-    if (IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone) != kIOReturnSuccess) return;
-    CFRetain(dev);
-    IOHIDDeviceRegisterInputValueCallback(dev, hidCallback, (__bridge void *)self);
-    IOHIDDeviceScheduleWithRunLoop(dev, CFRunLoopGetMain(), kCFRunLoopCommonModes);
-    [self.openHID addObject:key];
-    hidOK = YES;
-}
-
-- (void)closePointingDevice:(IOHIDDeviceRef)dev {
-    NSValue *key = [NSValue valueWithPointer:dev];
-    if (![self.openHID containsObject:key]) return;
-    [self.openHID removeObject:key];
-    [self.hidCache removeObjectForKey:key];
-    IOHIDDeviceUnscheduleFromRunLoop(dev, CFRunLoopGetMain(), kCFRunLoopCommonModes);
-    IOHIDDeviceClose(dev, kIOHIDOptionsTypeNone);
-    CFRelease(dev);
+    hidOK = set && CFSetGetCount(set) > 0;
+    if (set) CFRelease(set);
 }
 
 - (void)setupTap {
@@ -2329,10 +2535,12 @@ static NSString *latencyText(double ms) { return ms >= 0 ? [NSString stringWithF
     BOOL closed = lidClosed();
     if (closed != lidIsClosed) {
         lidIsClosed = closed;
-        BOOL hasBuiltIn = NO;
-        for (RGDevice *d in self.devices) if (d->kind == RGKindBuiltIn) hasBuiltIn = YES;
-        if (hasBuiltIn && self.live) {
-            [self log:closed ? @"· Lid closed: the built-in trackpad is unavailable" : @"· Lid opened: the built-in trackpad is available"];
+        BOOL hasPad = NO, hasKeyboard = NO;
+        for (RGDevice *d in self.devices) if (d->kind == RGKindBuiltIn) hasPad = YES;
+        for (NSDictionary *k in self.keyboards) if ([k[@"builtIn"] boolValue]) hasKeyboard = YES;
+        if ((hasPad || hasKeyboard) && self.live) {
+            NSString *what = hasPad && hasKeyboard ? @"built-in trackpad and keyboard are" : hasPad ? @"built-in trackpad is" : @"built-in keyboard is";
+            [self log:[NSString stringWithFormat:closed ? @"· Lid closed: the %@ unavailable" : @"· Lid opened: the %@ available", what]];
             [self relayout];
         }
     }

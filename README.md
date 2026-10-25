@@ -36,7 +36,7 @@ It started as a way to find out why one Magic Mouse's right-click kept disappear
 
 **Dropped and remapped clicks.** RodentGym compares the button reports from the hardware with the clicks macOS delivers. A click that never arrives is flagged as **dropped**; one that arrives as the wrong button is flagged as **remapped**. Both are logged with a timestamp.
 
-**The settings that are really in effect.** Model, firmware, colour, battery and charging, and the settings each device's driver is applying right now, which aren't always what System Settings shows.
+**The settings that are really in effect.** Model, firmware, colour, battery and charging, and the settings each device's driver is applying right now, which aren't always what System Settings shows. Magic Keyboards get a tile too, with battery and charging status.
 
 **An adjustable Magic Mouse split.** Drag the line between the left and right click areas. System Settings doesn't offer this; it's fixed at 55% unless you change it.
 

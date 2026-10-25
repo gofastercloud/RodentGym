@@ -24,7 +24,10 @@ NS_ASSUME_NONNULL_BEGIN
 /// half-height left and right arrows, "full" for full-height), functionRow ("full" or "half"), globe
 /// (YES when the fn key carries the Globe symbol) and year. With `anonymise`, names are generic and
 /// serial numbers are left out.
-NSArray<NSDictionary *> *RGConnectedKeyboards(BOOL anonymise);
+NSArray<NSDictionary *> *RGConnectedKeyboards(BOOL anonymise);   // Apple keyboards only
+
+/// Draws a small picture of a keyboard (a dictionary from RGConnectedKeyboards) centred in `rect`.
+void RGDrawKeyboardThumbnail(NSDictionary *keyboard, NSRect rect);
 
 @interface RGKeyboardTester : NSObject <NSWindowDelegate, NSToolbarDelegate>
 
@@ -32,9 +35,16 @@ NSArray<NSDictionary *> *RGConnectedKeyboards(BOOL anonymise);
 /// ever logged, never the keys themselves.
 @property (copy, nullable) void (^log)(NSString *line);
 
+/// The keyboards to offer, normally RodentGym's own list (Apple keyboards, with the built-in one
+/// following the lid). Falls back to RGConnectedKeyboards when not set.
+@property (copy, nullable) NSArray<NSDictionary *> *(^keyboardList)(void);
+
 @property (strong, readonly, nullable) NSWindow *window;
 
 - (void)show;
+
+/// Shows the tester with the keyboard whose "key" matches already chosen.
+- (void)showKeyboard:(NSString *)key;
 
 /// Shows the window with a frozen demo (used to capture README screenshots).
 - (void)showDemo;

@@ -3,7 +3,10 @@
 ## 0.6.0 — unreleased
 
 - **Keyboard Tester** (Devices › Keyboard Tester, ⌘B): press every key on a Magic Keyboard, an older Apple Wireless Keyboard or the Mac's own keyboard and watch it light up. Flags chatter (a key re-pressing within 30 ms), keys held down for more than four seconds, and the highest rollover. Draws the keyboard at its real shape (compact or with numeric keypad; ANSI, ISO or JIS; Touch ID, lock or eject key) with labels from your current input source, follows the layout of the keyboard you're typing on, and has a caps lock light. Left and right modifiers are told apart. Shortcuts are paused while it's in front so ⌘Q is safe to test. Keys are read only from its own window, with no permission, and never logged. **Copy Report** lists anything that didn't work.
-- **Keyboards are never opened.** The click watcher used to open every Apple HID device that matched, which included a Bluetooth Magic Keyboard (its key data was ignored). It now opens pointing devices one at a time and skips anything that is a keyboard or keypad.
+- **Keyboard tiles** in the main window: each Apple keyboard gets a tile with a small drawing, model, firmware, connection, layout and battery with charging status. Click it to open the Keyboard Tester. The built-in keyboard follows the lid, like the built-in trackpad (Settings › Built-in trackpad and keyboard). Connects, disconnects and charging changes are logged.
+- **Apple keyboards only:** keyboards from other makers, and security keys that present as keyboards, are ignored.
+- **Tidier device cards:** firmware, connection and colour are now tags, and the driver's settings are a small label-and-value table, with the Bluetooth address or serial on its own row.
+- **Keyboards are never opened.** The click watcher used to open every Apple HID device that matched, which included a Bluetooth Magic Keyboard (its key data was ignored). It now matches only devices whose primary usage is a mouse (plus the Magic Trackpads over USB), so no keyboard is ever opened, including other makers' keyboards that also have a mouse collection.
 
 ## 0.5.0 — 2026-10-25
 

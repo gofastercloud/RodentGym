@@ -125,9 +125,9 @@ NSArray<NSDictionary *> *RGConnectedKeyboards(BOOL anonymise) {
         int country = intProp(s, @kIOHIDCountryCodeKey, 0);
         IOObjectRelease(s);
         if (!name) continue;
-        // Security keys and other gadgets that type (YubiKeys, barcode scanners) also call themselves keyboards.
-        NSString *lower = name.lowercaseString;
-        if (vendor == 0x1050 || [lower containsString:@"yubikey"] || [lower containsString:@"security key"]) continue;
+        // Apple keyboards only: Magic Keyboards, the Apple Wireless Keyboard and the Mac's own keyboard.
+        // Other makers' keyboards, and security keys that present as keyboards, are left out.
+        if (!builtIn && vendor != 0x004c && vendor != 0x05ac) continue;
         NSString *key = builtIn ? @"builtin" : serial ? serial.lowercaseString : [NSString stringWithFormat:@"%@-%x-%x", name, vendor, product];
         if ([seen containsObject:key]) continue;
         [seen addObject:key];
@@ -149,15 +149,14 @@ NSArray<NSDictionary *> *RGConnectedKeyboards(BOOL anonymise) {
             d[@"transport"] = @"Built in";
         } else {
             d[@"name"] = anonymise ? (m ? @"Magic Keyboard" : @"Keyboard") : name;
-            d[@"model"] = m ? m->name : (vendor == 0x004c || vendor == 0x05ac) ? [NSString stringWithFormat:@"Apple keyboard (product 0x%04x)", product]
-                                                                             : @"Keyboard from another maker";
+            d[@"model"] = m ? m->name : [NSString stringWithFormat:@"Apple keyboard (product 0x%04x)", product];
             if (m) {
                 d[@"years"] = m->years;
                 d[@"layout"] = m->layout;
                 d[@"topKey"] = m->topKey;
                 d[@"globe"] = @(m->globe);
             } else {
-                d[@"generic"] = @YES;   // drawn as a current Magic Keyboard; positions may differ
+                d[@"generic"] = @YES;   // a model not in the table yet: drawn as a current Magic Keyboard
                 d[@"layout"] = @"compact_%@_2021";
                 d[@"topKey"] = @"none";
                 d[@"globe"] = @NO;
@@ -628,7 +627,8 @@ static NSColor *srgb(CGFloat r, CGFloat g, CGFloat b, CGFloat a) { return [NSCol
     NSMutableArray *conn = [NSMutableArray array];
     if (d[@"transport"]) [conn addObject:d[@"transport"]];
     if (d[@"firmware"]) [conn addObject:[@"firmware " stringByAppendingString:d[@"firmware"]]];
-    if (d[@"battery"]) [conn addObject:[NSString stringWithFormat:@"battery %@%%", d[@"battery"]]];
+    if (d[@"battery"]) [conn addObject:d[@"powerStatus"] ? [NSString stringWithFormat:@"battery %@%% (%@)", d[@"battery"], [d[@"powerStatus"] lowercaseString]]
+                                                         : [NSString stringWithFormat:@"battery %@%%", d[@"battery"]]];
     if (conn.count) [lines addObject:[conn componentsJoinedByString:@" · "]];
     [self drawLines:lines from:t.origin.y + 62 in:t font:body colour:NSColor.secondaryLabelColor];
 
@@ -865,12 +865,12 @@ static uint64_t modifierMask(int code) {
 #pragma mark Keyboards and layout choice
 
 - (void)reloadKeyboards {
-    NSArray *list = demo ? self.keyboards : RGConnectedKeyboards(NO);
+    NSArray *list = demo ? self.keyboards : self.keyboardList ? self.keyboardList() : RGConnectedKeyboards(NO);
     NSString *keep = self.current[@"key"];
     self.keyboards = list;
     [self.keyboardPopup removeAllItems];
     for (NSDictionary *d in list) [self.keyboardPopup addItemWithTitle:d[@"name"]];
-    if (!list.count) [self.keyboardPopup addItemWithTitle:@"No keyboard found"];
+    if (!list.count) [self.keyboardPopup addItemWithTitle:@"No Apple keyboard found"];
     NSDictionary *pick = list.firstObject;
     for (NSDictionary *d in list) if ([d[@"key"] isEqual:keep]) pick = d;
     self.current = pick;
@@ -1061,7 +1061,8 @@ static uint64_t modifierMask(int code) {
     NSMutableArray *conn = [NSMutableArray array];
     if (d[@"transport"]) [conn addObject:d[@"transport"]];
     if (d[@"firmware"]) [conn addObject:[@"firmware " stringByAppendingString:d[@"firmware"]]];
-    if (d[@"battery"]) [conn addObject:[NSString stringWithFormat:@"battery %@%%", d[@"battery"]]];
+    if (d[@"battery"]) [conn addObject:d[@"powerStatus"] ? [NSString stringWithFormat:@"battery %@%% (%@)", d[@"battery"], [d[@"powerStatus"] lowercaseString]]
+                                                         : [NSString stringWithFormat:@"battery %@%%", d[@"battery"]]];
     if (conn.count) [r appendFormat:@"Connection: %@\n", [conn componentsJoinedByString:@" · "]];
     if (d[@"serial"]) [r appendFormat:@"Serial / address: %@\n", d[@"serial"]];
     [r appendFormat:@"Layout: %@\n\n", self.layoutDescription];
@@ -1112,7 +1113,7 @@ static uint64_t modifierMask(int code) {
 - (void)windowDidBecomeKey:(NSNotification *)n {
     if (demo) return;
     NSString *before = [[self.keyboards valueForKey:@"key"] componentsJoinedByString:@","];
-    NSArray *now = RGConnectedKeyboards(NO);
+    NSArray *now = self.keyboardList ? self.keyboardList() : RGConnectedKeyboards(NO);
     if (![[[now valueForKey:@"key"] componentsJoinedByString:@","] isEqual:before]) [self reloadKeyboards];
 }
 
@@ -1131,6 +1132,15 @@ static uint64_t modifierMask(int code) {
                   self.current[@"name"] ?: @"the keyboard", maxRollover,
                   chatterKeys ? [NSString stringWithFormat:@"chatter on %d key%@", chatterKeys, chatterKeys == 1 ? @"" : @"s"] : @"no chatter"]);
     }
+}
+
+- (void)showKeyboard:(NSString *)key {
+    [self show];
+    for (NSUInteger i = 0; i < self.keyboards.count; i++)
+        if ([self.keyboards[i][@"key"] isEqual:key]) {
+            [self.keyboardPopup selectItemAtIndex:(NSInteger)i];
+            [self keyboardChanged:self.keyboardPopup];
+        }
 }
 
 #pragma mark Demo
@@ -1186,3 +1196,44 @@ static uint64_t modifierMask(int code) {
 }
 
 @end
+
+#pragma mark - Thumbnail (for the main window's keyboard tile)
+
+void RGDrawKeyboardThumbnail(NSDictionary *keyboard, NSRect rect) {
+    int fam = keyboard[@"family"] ? [keyboard[@"family"] intValue] : familyForKbdType(LMGetKbdType());
+    NSString *pattern = keyboard[@"layout"] ?: @"compact_%@_2021";
+    static RGLayout L;   // large; drawn on the main thread only
+    buildLayout(&L, [NSString stringWithFormat:pattern, kFamilyNames[fam]]);
+    if (!L.count) return;
+    CGFloat pad = 0.4;
+    CGFloat u = MIN(rect.size.width / (L.width + 2 * pad), rect.size.height / (L.height + 2 * pad));
+    NSSize size = NSMakeSize((L.width + 2 * pad) * u, (L.height + 2 * pad) * u);
+    NSRect board = NSMakeRect(round(NSMidX(rect) - size.width / 2), round(NSMidY(rect) - size.height / 2), size.width, size.height);
+    BOOL dark = [keyboard[@"colour"] isEqual:@"black"] || [keyboard[@"colour"] isEqual:@"space grey"];
+    NSColor *body = dark ? srgb(0.22, 0.22, 0.24, 1) : srgb(0.84, 0.85, 0.86, 1);
+    NSColor *cap = dark ? srgb(0.10, 0.10, 0.11, 1) : srgb(0.985, 0.985, 0.99, 1);
+    NSBezierPath *shell = [NSBezierPath bezierPathWithRoundedRect:board xRadius:u * 0.5 yRadius:u * 0.5];
+    [NSGraphicsContext saveGraphicsState];
+    NSShadow *sh = [NSShadow new];
+    sh.shadowColor = [NSColor colorWithWhite:0 alpha:0.25];
+    sh.shadowBlurRadius = MAX(2, u * 0.6);
+    sh.shadowOffset = NSMakeSize(0, -u * 0.15);
+    [sh set];
+    [body setFill];
+    [shell fill];
+    [NSGraphicsContext restoreGraphicsState];
+    [[[NSGradient alloc] initWithStartingColor:[body blendedColorWithFraction:0.35 ofColor:NSColor.whiteColor]
+                                   endingColor:[body blendedColorWithFraction:0.18 ofColor:NSColor.blackColor]]
+        drawInBezierPath:shell angle:NSGraphicsContext.currentContext.isFlipped ? 90 : -90];
+    BOOL flipped = NSGraphicsContext.currentContext.isFlipped;
+    for (int i = 0; i < L.count; i++) {
+        const RGKey *k = &L.keys[i];
+        CGFloat ky = flipped ? board.origin.y + (pad + k->y) * u : NSMaxY(board) - (pad + k->y + k->h) * u;
+        NSRect r = NSInsetRect(NSMakeRect(board.origin.x + (pad + k->x) * u, ky, k->w * u, k->h * u), u * 0.07, u * 0.07);
+        if (k->flags & RGKeyReturnTop) { r.size.height += u * 0.15; if (!flipped) r.origin.y -= u * 0.15; }
+        if (k->flags & RGKeyReturnBottom) { r.size.height += u * 0.15; if (flipped) r.origin.y -= u * 0.15; }
+        [((k->flags & RGKeySystem) ? [cap blendedColorWithFraction:0.12 ofColor:body] : cap) setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:r xRadius:u * 0.12 yRadius:u * 0.12] fill];
+    }
+}
+
