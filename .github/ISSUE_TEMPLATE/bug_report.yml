@@ -4,7 +4,7 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: Thanks for taking the time to report this. The more detail you can give, the faster it can be fixed.
+      value: Thanks for taking the time to report this. The more detail you can give, the faster it can be fixed. [Reporting a problem](https://github.com/gofastercloud/RodentGym/blob/main/CONTRIBUTING.md#reporting-a-problem) has an example of a report that's easy to act on.
   - type: textarea
     id: what
     attributes:
@@ -25,7 +25,7 @@ body:
     attributes:
       label: RodentGym and macOS versions
       description: RodentGym › About RodentGym shows the version. Apple menu › About This Mac shows macOS.
-      placeholder: RodentGym 0.4.0, macOS 27.0.1
+      placeholder: RodentGym 0.6.0, macOS 26.1
     validations:
       required: true
   - type: dropdown
@@ -36,13 +36,21 @@ body:
       options:
         - Magic Mouse
         - Magic Trackpad
+        - Magic Keyboard or Apple Wireless Keyboard
         - Built-in MacBook trackpad
+        - Built-in MacBook keyboard
         - Other
+  - type: input
+    id: details
+    attributes:
+      label: Mac, device model and connection
+      description: Your Mac's model and chip, the device's model and year, and whether it was on Bluetooth or a cable.
+      placeholder: MacBook Air (13-inch, M3) · Magic Mouse 2 (Lightning), Bluetooth
   - type: textarea
     id: logs
     attributes:
       label: Log lines or Self-Test report
-      description: A few lines from ~/Library/Logs/RodentGym.log around the problem, or Copy Report from the Hardware Self-Test. Remove anything you'd rather not share, such as device serial numbers.
+      description: A few lines from ~/Library/Logs/RodentGym.log around the problem, or Copy Report from the Hardware Self-Test or Keyboard Tester. Remove anything you'd rather not share, such as device serial numbers.
       render: text
   - type: textarea
     id: screenshots

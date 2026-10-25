@@ -173,7 +173,9 @@ Contributions of every size are welcome: a typo, a better explanation in the hel
 
 Not sure where to start? Have a look at issues labelled [good first issue](https://github.com/gofastercloud/RodentGym/labels/good%20first%20issue), or ask in [Discussions](https://github.com/gofastercloud/RodentGym/discussions). Questions like "is this reading normal?" are welcome there too.
 
-Found a bug? [Open an issue](https://github.com/gofastercloud/RodentGym/issues/new/choose). A Self-Test report or a few lines from the log helps a lot.
+**Testers wanted.** RodentGym has only been tried on a few devices. Ten minutes with yours and a [test report](https://github.com/gofastercloud/RodentGym/issues/new?template=test_report.yml) is one of the most useful things you can do, even if everything works. The [testing checklist](CONTRIBUTING.md#testing) has ideas for what to try.
+
+Found a bug? [Open an issue](https://github.com/gofastercloud/RodentGym/issues/new/choose). [Reporting a problem](CONTRIBUTING.md#reporting-a-problem) has an example of a report that's easy to act on.
 
 ## Support
 

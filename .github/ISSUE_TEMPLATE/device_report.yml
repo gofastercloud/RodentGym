@@ -1,5 +1,5 @@
 name: Device report
-description: Wrong colour, unknown model, or readings from a device with a known fault.
+description: Wrong colour, unknown model, wrong keyboard layout, or readings from a device with a known fault.
 labels: [device support]
 body:
   - type: markdown
@@ -12,6 +12,7 @@ body:
       options:
         - The colour is wrong
         - The model shows as a product ID
+        - The keyboard drawing doesn't match my keyboard
         - My device has a known fault, here are its readings
         - Something else
     validations:
@@ -20,7 +21,7 @@ body:
     id: device
     attributes:
       label: The device
-      description: Its name and colour as Apple sells it, and the year if you know it.
+      description: Its name and colour as Apple sells it, the year if you know it, and for keyboards the layout (ANSI, ISO or JIS).
       placeholder: Magic Trackpad, black, 2022 (USB-C)
     validations:
       required: true
@@ -28,11 +29,11 @@ body:
     id: shown
     attributes:
       label: What RodentGym shows
-      description: The model line and the colour line from the device's card, including the colour code number.
-      placeholder: "Magic Trackpad (product 0x0324) · Colour code 1"
+      description: The model line and colour from the device's card or keyboard tile. If the colour shows as a number, include it.
+      placeholder: "Magic Trackpad (product 0x0324) · Colour 12"
   - type: textarea
     id: report
     attributes:
       label: Self-Test report or log lines
-      description: For a faulty device, run the Hardware Self-Test and paste Copy Report here. Remove the serial number if you'd rather not share it.
+      description: For a faulty device, run the Hardware Self-Test or Keyboard Tester and paste Copy Report here. Remove the serial number or Bluetooth address if you'd rather not share it.
       render: text

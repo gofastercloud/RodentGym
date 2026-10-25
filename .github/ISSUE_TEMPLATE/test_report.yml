@@ -1,0 +1,76 @@
+name: Test report
+description: Tried RodentGym on your hardware? Tell us how it went, even if everything worked.
+title: "Test report: "
+labels: [test report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. RodentGym has only been tried on a few devices, so every report helps, including "it all worked".
+        The [testing checklist](https://github.com/gofastercloud/RodentGym/blob/main/CONTRIBUTING.md#testing) has ideas for what to try. Do whatever matches your hardware.
+  - type: input
+    id: versions
+    attributes:
+      label: RodentGym and macOS versions
+      description: RodentGym › About RodentGym, and Apple menu › About This Mac.
+      placeholder: RodentGym 0.6.0, macOS 26.1
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Mac
+      description: Model and chip, from About This Mac.
+      placeholder: MacBook Air (13-inch, M3)
+    validations:
+      required: true
+  - type: textarea
+    id: devices
+    attributes:
+      label: Devices you tested
+      description: |
+        One line per device: what Apple called it and the year, colour, how it was connected (Bluetooth or cable), and for keyboards the layout (ANSI, ISO or JIS) and your input source.
+      placeholder: |
+        Magic Mouse 2 (Lightning), white, Bluetooth
+        Magic Keyboard with Touch ID, 2021, silver, ISO, British input source, Bluetooth and USB
+    validations:
+      required: true
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: What you tried
+      options:
+        - label: Device cards (model, colour, firmware, connection, battery and charging)
+        - label: Clicks and the log (latency shown for each click)
+        - label: Hardware Self-Test
+        - label: Latency Monitor
+        - label: Magic Mouse split
+        - label: Keyboard tile and Keyboard Tester
+        - label: Built-in trackpad and keyboard with the lid closed and opened
+        - label: The gym (Gesture Trainer, Force Sensor, Cheese Stack)
+  - type: dropdown
+    id: result
+    attributes:
+      label: Overall
+      options:
+        - Everything I tried worked
+        - Mostly worked, a few things were off
+        - Something important didn't work
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: What worked, what didn't, and anything that confused you
+      description: Wrong model names, keys that didn't light up, a drawing that doesn't match your keyboard, confusing wording, all of it.
+  - type: textarea
+    id: reports
+    attributes:
+      label: Copy Report output or log lines
+      description: Paste Copy Report from the Self-Test or Keyboard Tester, or lines from ~/Library/Logs/RodentGym.log. Replace device names and serial numbers or Bluetooth addresses if you'd rather not share them.
+      render: text
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Optional. For keyboards, a screenshot of the Keyboard Tester next to a photo of your keyboard is perfect.
