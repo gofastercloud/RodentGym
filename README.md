@@ -165,7 +165,7 @@ A button report is matched with the click event that follows it within a configu
 - Latency starts when the Mac receives the button report, so time spent over Bluetooth isn't included.
 - Stall and lost-stroke detection are heuristics that haven't yet been checked against known-faulty hardware. Reports from people with genuinely faulty devices are very welcome.
 - Colour codes aren't documented by Apple. RodentGym's table matches real devices, and Settings can override it. If yours is wrong, please open an issue with the model and code.
-- Model names are known for the Magic Mouse 2, Magic Trackpad 2 and first-generation devices. Other models show their product ID.
+- Mouse and trackpad model names are known for the Magic Mouse 2, Magic Trackpad 2 and first-generation devices, and every Apple keyboard since 2007 by product ID. Other models show their product ID.
 
 ## Contributing
 
@@ -185,4 +185,4 @@ RodentGym is free and will stay that way. If it saved you an afternoon, or a tri
 
 MIT. See [LICENSE](LICENSE).
 
-RodentGym isn't affiliated with or endorsed by Apple. Magic Mouse, Magic Trackpad, Force Touch and Liquid Glass are trademarks of Apple Inc.
+RodentGym isn't affiliated with or endorsed by Apple. Magic Mouse, Magic Trackpad, Magic Keyboard, Force Touch, Touch ID and Liquid Glass are trademarks of Apple Inc.
