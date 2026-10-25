@@ -8,8 +8,8 @@
   <key>CFBundleExecutable</key><string>RodentGym</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.5.0</string>
-  <key>CFBundleVersion</key><string>5</string>
+  <key>CFBundleShortVersionString</key><string>0.6.0</string>
+  <key>CFBundleVersion</key><string>6</string>
   <key>NSBluetoothAlwaysUsageDescription</key><string>RodentGym reads the signal strength of your connected Bluetooth mice and trackpads to help find wireless problems. It only does this while Bluetooth signal monitoring is turned on in Settings.</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0 — unreleased
+
+- **Keyboard Tester** (Devices › Keyboard Tester, ⌘B): press every key on a Magic Keyboard, an older Apple Wireless Keyboard or the Mac's own keyboard and watch it light up. Flags chatter (a key re-pressing within 30 ms), keys held down for more than four seconds, and the highest rollover. Draws the keyboard at its real shape (compact or with numeric keypad; ANSI, ISO or JIS; Touch ID, lock or eject key) with labels from your current input source, follows the layout of the keyboard you're typing on, and has a caps lock light. Left and right modifiers are told apart. Shortcuts are paused while it's in front so ⌘Q is safe to test. Keys are read only from its own window, with no permission, and never logged. **Copy Report** lists anything that didn't work.
+- **Keyboards are never opened.** The click watcher used to open every Apple HID device that matched, which included a Bluetooth Magic Keyboard (its key data was ignored). It now opens pointing devices one at a time and skips anything that is a keyboard or keypad.
+
 ## 0.5.0 — 2026-10-25
 
 - **Adjustable Magic Mouse split:** drag the dashed line between the primary and secondary click areas on the mouse, or use the slider in Settings. The new split is applied to the driver straight away and saved to the mouse's preferences, so it survives reconnecting and restarting. Reset to 55% puts back Apple's default. This is the only setting RodentGym changes, and only when you move it.

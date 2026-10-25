@@ -22,6 +22,7 @@ It's built for the frustrating problems: right-click that does nothing, clicks t
 - **Something isn't clicking?** Watch the main window while you click. Each card shows the touches and button reports from one device, and the bar below shows what macOS delivered.
 - **Intermittent trouble?** Leave RodentGym running. Dropped clicks are flagged and logged, and the **Latency Monitor** keeps the last two minutes on one timeline.
 - **Suspect the hardware?** Run the **Hardware Self-Test** for dead zones, phantom touches and the haptic engine.
+- **A key playing up?** The **Keyboard Tester** checks every key on a Magic Keyboard for dead, chattering and stuck keys.
 
 > RodentGym only listens. It never blocks, changes or creates input. The one exception is the Magic Mouse split, and only when you move it yourself.
 
@@ -108,6 +109,35 @@ On a Force Touch trackpad the click you feel is made by a haptic engine. Rest on
 
 **Copy Report** puts every result on the clipboard as plain text, with each device's model, firmware and serial number and the Latency Monitor's summary, ready to paste into an Apple support case.
 
+# Keyboard Tester | keyboard | Every key, plus chatter, stuck keys and rollover
+
+Checks a Magic Keyboard, an older Apple Wireless Keyboard or your Mac's own keyboard. Open it from **Devices › Keyboard Tester** or press `⌘B`, then press every key once. Each key turns green as it works.
+
+- **Chatter** is one press arriving as two, the usual sign of a worn or dirty switch. A key that releases and presses again within 30 ms is flagged orange.
+- **Stuck** keys are flagged when a key stays down for more than four seconds.
+- **Rollover** is the most keys the keyboard reported at once. Hold down a handful of letters together to find the limit.
+- **Caps lock** has a light, just like the real key.
+
+## Function keys
+
+The top row normally changes brightness and volume, and macOS handles those keys before any app sees them. Hold **fn** (or Globe) while you press F1 to F12 and they arrive as function keys. Volume and playback keys light up on their own when macOS passes them along.
+
+## Layout
+
+The tester draws the keyboard you choose in the toolbar at its real shape, measured from Apple's own product images: every Magic Keyboard since 2015, compact or with a numeric keypad, the aluminium Apple Wireless Keyboard, and a MacBook's built-in keyboard, each in ANSI, ISO or JIS. The layout comes from the country code the keyboard reports, or from the keys you type. If it guesses wrong, pick one from the **Layout** menu. Key labels come from your current input source, so a French or German layout shows its own letters.
+
+> Shortcuts such as `⌘Q` and `⌘W` are paused while the tester is in front, so you can press them safely. Close the window with its close button, or click another window, to get them back.
+
+## What it can't test
+
+- **Touch ID, lock and eject** are handled by macOS and never reach an app as key presses, so they're drawn dashed and not counted. Pressing Touch ID or the lock key locks your Mac, so leave them out.
+- **System shortcuts** such as `⌘Tab`, `⌘Space` and `⌃` with the arrow keys are taken by macOS first.
+- RodentGym can't tell which keyboard a key press came from. With two keyboards connected, keys from either one light up.
+- macOS ignores very quick taps on **caps lock** (under about 75 ms) on purpose, so press it deliberately.
+- Arrow keys pressed with **fn** arrive as Home, End, Page Up and Page Down, so press the arrows on their own.
+
+**Copy Report** puts the results on the clipboard: keys never pressed, any chatter or stuck keys, rollover, and the keyboard's model, firmware and connection.
+
 # Gesture Trainer | hand.draw | Practise the gestures you have switched on
 
 A checklist of every gesture you have switched on for each device. Open it from **Gym › Gesture Trainer** or press `⌘T`. Do a gesture with the pointer over the practice pad and it's ticked off. The banner names what was recognised, with details such as how far you pinched or how quickly you double-clicked.
@@ -158,6 +188,7 @@ Off until you turn it on. The first time, macOS asks whether RodentGym may use B
 
 | `⌘D` | Latency Monitor
 | `⌘E` | Hardware Self-Test
+| `⌘B` | Keyboard Tester
 | `⌘T` | Gesture Trainer
 | `⌘J` | Force Sensor
 | `⌘G` | Cheese Stack
@@ -171,8 +202,9 @@ Off until you turn it on. The first time, macOS asks whether RodentGym may use B
 
 # Privacy and permissions | lock.shield | What RodentGym can see, and what it asks for
 
-RodentGym only listens. It watches mouse buttons and touches, never the keyboard. It needs no Accessibility permission, makes no network connections, and nothing leaves your Mac. The log is readable only by you.
+RodentGym only listens. It watches mouse buttons and touches. It needs no Accessibility permission, makes no network connections, and nothing leaves your Mac. The log is readable only by you.
 
+- **The keyboard.** RodentGym never opens a keyboard device or watches typing in other apps. The Keyboard Tester reads keys only from its own window while that window is in front, the same way a text field does, and never logs them. It names connected keyboards from system information that needs no permission.
 - **Input Monitoring.** Watching click events doesn't normally need permission. If the **macOS delivers** lights say "Unavailable", allow RodentGym under [Privacy & Security › Input Monitoring](x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent) and reopen it.
 - **Bluetooth.** Requested only if you turn on signal monitoring in Settings.
 - **The mouse split** is the only setting RodentGym changes, and only when you move it.

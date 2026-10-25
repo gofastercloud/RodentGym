@@ -30,10 +30,11 @@
 #import "SelfTest.h"
 #import "Bluetooth.h"
 #import "Help.h"
+#import "Keyboard.h"
 #include <mach/mach_time.h>
 
 #define APP_NAME    @"RodentGym"
-#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.5.0")
+#define APP_VERSION ((NSString *)[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0.6.0")
 #define LOG_PATH    [@"~/Library/Logs/RodentGym.log" stringByExpandingTildeInPath]
 
 #pragma mark - MultitouchSupport (private framework)
@@ -624,6 +625,7 @@ static BOOL writeIconPNG(NSString *path, int px) {
 @property (strong) RGForceSensor *forceSensor;
 @property (strong) RGLatencyMonitor *monitor;
 @property (strong) RGSelfTest *selfTest;
+@property (strong) RGKeyboardTester *keyboardTester;
 @property (strong) RGBluetoothMonitor *bluetooth;
 @property (strong) NSButton *bluetoothCheckbox;
 @property (strong) NSTextField *bluetoothNote;
@@ -650,6 +652,9 @@ static BOOL writeIconPNG(NSString *path, int px) {
 - (void)rescanDevices:(id)sender;
 - (void)refreshBatteryAndColour;
 - (void)setDivision:(int)percent forDevice:(RGDevice *)d;
+- (void)openPointingDevice:(IOHIDDeviceRef)dev;
+- (void)closePointingDevice:(IOHIDDeviceRef)dev;
+@property (strong) NSMutableSet<NSValue *> *openHID;
 @end
 
 #define MIN_DIVISION 35   // limits for the Magic Mouse split, in percent across the mouse
@@ -662,6 +667,14 @@ static void hidCallback(void *ctx, IOReturn result, void *sender, IOHIDValueRef 
     if (usage < 1 || usage > 3) return;
     [(__bridge RGController *)ctx hidButton:(int)usage down:IOHIDValueGetIntegerValue(value) != 0 device:IOHIDElementGetDevice(el)
                                       stamp:IOHIDValueGetTimeStamp(value)];
+}
+
+static void hidDeviceMatched(void *ctx, IOReturn result, void *sender, IOHIDDeviceRef dev) {
+    [(__bridge RGController *)ctx openPointingDevice:dev];
+}
+
+static void hidDeviceRemoved(void *ctx, IOReturn result, void *sender, IOHIDDeviceRef dev) {
+    [(__bridge RGController *)ctx closePointingDevice:dev];
 }
 
 static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef ev, void *ctx) {
@@ -1151,7 +1164,7 @@ static double easeOutCubic(double t) { return 1 - pow(1 - t, 3); }
 
 static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"trackpadSettings", *const kTBGame = @"cheeseStack",
                 *const kTBTrainer = @"gestureTrainer", *const kTBForce = @"forceSensor", *const kTBReset = @"resetCounters",
-                *const kTBMonitor = @"latencyMonitor", *const kTBSelfTest = @"selfTest";
+                *const kTBMonitor = @"latencyMonitor", *const kTBSelfTest = @"selfTest", *const kTBKeyboard = @"keyboardTester";
 
 @implementation RGController
 
@@ -1212,6 +1225,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     self.live = !self.snapshotPath && !self.demo;
     lidIsClosed = lidClosed();
     self.hidCache = [NSMutableDictionary dictionary];
+    self.openHID = [NSMutableSet set];
     self.lastSecondary = [NSMutableDictionary dictionary];
     self.shortFmt = [NSDateFormatter new];
     self.shortFmt.dateFormat = @"HH:mm:ss";
@@ -1347,6 +1361,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
     [dev addItem:NSMenuItem.separatorItem];
     [self add:dev title:@"Latency Monitor" action:@selector(showMonitor:) key:@"d" modifiers:0 symbol:@"waveform.path.ecg"];
     [self add:dev title:@"Hardware Self-Test" action:@selector(showSelfTest:) key:@"e" modifiers:0 symbol:@"checkmark.seal"];
+    [self add:dev title:@"Keyboard Tester" action:@selector(showKeyboardTester:) key:@"b" modifiers:0 symbol:@"keyboard"];
     [dev addItem:NSMenuItem.separatorItem];
     [self add:dev title:@"Open Log File" action:@selector(openLog:) key:@"l" modifiers:0 symbol:@"doc.text"];
 
@@ -1399,7 +1414,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
 }
 
 - (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar {
-    return @[kTBMouse, kTBTrackpad, NSToolbarFlexibleSpaceItemIdentifier, kTBMonitor, kTBSelfTest, NSToolbarSpaceItemIdentifier,
+    return @[kTBMouse, kTBTrackpad, NSToolbarFlexibleSpaceItemIdentifier, kTBMonitor, kTBSelfTest, kTBKeyboard, NSToolbarSpaceItemIdentifier,
              kTBGame, kTBTrainer, kTBForce, NSToolbarSpaceItemIdentifier, kTBReset];
 }
 - (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar {
@@ -1415,6 +1430,7 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         kTBForce:    @[@"Force Sensor", @"gauge.with.dots.needle.67percent", @"Graph click pressure from a Force Touch trackpad", @"showForce:"],
         kTBMonitor:  @[@"Latency Monitor", @"waveform.path.ecg", @"Graph click latency, touch report rate and Bluetooth signal", @"showMonitor:"],
         kTBSelfTest: @[@"Hardware Self-Test", @"checkmark.seal", @"Test a device for dead zones, phantom touches and a working haptic engine", @"showSelfTest:"],
+        kTBKeyboard: @[@"Keyboard Tester", @"keyboard", @"Check every key on a keyboard for dead, chattering or stuck keys", @"showKeyboardTester:"],
         kTBReset:    @[@"Reset Counters", @"arrow.counterclockwise", @"Reset the click counters", @"resetCounters:"]}[ident];
     if (!spec) return nil;
     NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:ident];
@@ -1582,6 +1598,17 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
         self.selfTest.latencySummary = ^NSString * { return weakSelf.monitor.summary; };
     }
     [self.selfTest show];
+    [self applyWindowLevel];
+    [self activate];
+}
+
+- (void)showKeyboardTester:(id)sender {
+    if (!self.keyboardTester) {
+        self.keyboardTester = [RGKeyboardTester new];
+        __weak RGController *weakSelf = self;
+        self.keyboardTester.log = ^(NSString *line) { [weakSelf log:line]; };
+    }
+    [self.keyboardTester show];
     [self applyWindowLevel];
     [self activate];
 }
@@ -2096,12 +2123,40 @@ static NSString *const kTBMouse = @"mouseSettings", *const kTBTrackpad = @"track
                          @{@kIOHIDVendorIDKey: @0x05ac, @kIOHIDProductIDKey: @0x030e},
                          @{@kIOHIDDeviceUsagePageKey: @(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey: @(kHIDUsage_GD_Mouse)}];
     IOHIDManagerSetDeviceMatchingMultiple(hid, (__bridge CFArrayRef)matches);
-    IOHIDManagerRegisterInputValueCallback(hid, hidCallback, (__bridge void *)self);
+    // The manager itself is never opened, because that would open every matching device, including
+    // a Bluetooth Magic Keyboard. Each pointing device is opened on its own as it appears, and
+    // anything that is a keyboard or keypad is left alone.
+    IOHIDManagerRegisterDeviceMatchingCallback(hid, hidDeviceMatched, (__bridge void *)self);
+    IOHIDManagerRegisterDeviceRemovalCallback(hid, hidDeviceRemoved, (__bridge void *)self);
     IOHIDManagerScheduleWithRunLoop(hid, CFRunLoopGetMain(), kCFRunLoopCommonModes);
-    IOHIDManagerOpen(hid, kIOHIDOptionsTypeNone);   // keyboards fail without Input Monitoring; pointing devices still open
     CFSetRef set = IOHIDManagerCopyDevices(hid);
-    hidOK = set && CFSetGetCount(set) > 0;
-    if (set) CFRelease(set);
+    if (set) {
+        for (id dev in (__bridge NSSet *)set) [self openPointingDevice:(__bridge IOHIDDeviceRef)dev];
+        CFRelease(set);
+    }
+}
+
+- (void)openPointingDevice:(IOHIDDeviceRef)dev {
+    if (IOHIDDeviceConformsTo(dev, kHIDPage_GenericDesktop, kHIDUsage_GD_Keyboard) ||
+        IOHIDDeviceConformsTo(dev, kHIDPage_GenericDesktop, kHIDUsage_GD_Keypad)) return;   // never a keyboard
+    NSValue *key = [NSValue valueWithPointer:dev];
+    if ([self.openHID containsObject:key]) return;
+    if (IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone) != kIOReturnSuccess) return;
+    CFRetain(dev);
+    IOHIDDeviceRegisterInputValueCallback(dev, hidCallback, (__bridge void *)self);
+    IOHIDDeviceScheduleWithRunLoop(dev, CFRunLoopGetMain(), kCFRunLoopCommonModes);
+    [self.openHID addObject:key];
+    hidOK = YES;
+}
+
+- (void)closePointingDevice:(IOHIDDeviceRef)dev {
+    NSValue *key = [NSValue valueWithPointer:dev];
+    if (![self.openHID containsObject:key]) return;
+    [self.openHID removeObject:key];
+    [self.hidCache removeObjectForKey:key];
+    IOHIDDeviceUnscheduleFromRunLoop(dev, CFRunLoopGetMain(), kCFRunLoopCommonModes);
+    IOHIDDeviceClose(dev, kIOHIDOptionsTypeNone);
+    CFRelease(dev);
 }
 
 - (void)setupTap {
@@ -2358,6 +2413,7 @@ static NSString *latencyText(double ms) { return ms >= 0 ? [NSString stringWithF
     NSMutableArray *a = [NSMutableArray arrayWithObject:@[@"main", self.window]];
     if (self.monitor.window) [a addObject:@[@"latency-monitor", self.monitor.window]];
     if (self.selfTest.window) [a addObject:@[@"self-test", self.selfTest.window]];
+    if (self.keyboardTester.window) [a addObject:@[@"keyboard-tester", self.keyboardTester.window]];
     if (self.forceSensor.window) [a addObject:@[@"force-sensor", self.forceSensor.window]];
     if (self.trainer.window) [a addObject:@[@"gesture-trainer", self.trainer.window]];
     if (self.game.window) [a addObject:@[@"cheese-stack", self.game.window]];
@@ -2378,6 +2434,9 @@ static NSString *latencyText(double ms) { return ms >= 0 ? [NSString stringWithF
     self.selfTest = [RGSelfTest new];
     [self.selfTest showDemo];
     [self hideForShot:self.selfTest.window size:NSMakeSize(1060, 700)];
+    self.keyboardTester = [RGKeyboardTester new];
+    [self.keyboardTester showDemo];
+    [self hideForShot:self.keyboardTester.window size:NSMakeSize(1120, 680)];
     self.forceSensor = [RGForceSensor new];
     [self.forceSensor showDemo];
     [self hideForShot:self.forceSensor.window size:NSMakeSize(900, 620)];
@@ -2432,6 +2491,8 @@ int main(int argc, const char *argv[]) {
         if (i != NSNotFound && i + 1 < args.count) return [[RGLatencyMonitor new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
         i = [args indexOfObject:@"--snapshot-selftest"];
         if (i != NSNotFound && i + 1 < args.count) return [[RGSelfTest new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
+        i = [args indexOfObject:@"--keyboard-layouts"];
+        if (i != NSNotFound && i + 1 < args.count) return [RGKeyboardTester writeLayoutsTo:args[i + 1]] ? 0 : 1;
         i = [args indexOfObject:@"--snapshot-trainer"];
         if (i != NSNotFound && i + 1 < args.count) return [[RGGestureTrainer new] writeDemoSnapshotTo:args[i + 1]] ? 0 : 1;
 

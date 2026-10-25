@@ -58,6 +58,15 @@ Click latency, touch report rate and Bluetooth signal on one two-minute timeline
 
 Three short checks for faults in the device itself: **surface coverage** finds dead zones, **phantom touch** catches a sensor reporting contact when nobody is touching it, and **haptics** checks a Force Touch trackpad's haptic engine. Copy Report gives you a plain-text summary for a support case.
 
+### Keyboard Tester
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/keyboard-tester-dark.png">
+  <img src="docs/images/keyboard-tester-light.png" alt="The Keyboard Tester: a Magic Keyboard drawn to scale, with tested keys green and two held keys blue">
+</picture>
+
+Press every key once and watch it light up. The tester also catches what a worn keyboard does: keys that **chatter** (one press arriving as two), keys that **stick**, and how many keys it can report at once. Every Magic Keyboard since 2015, the aluminium Apple Wireless Keyboard and MacBook keyboards are drawn to scale, in ANSI, ISO or JIS, with labels from your own input source. It reads keys only from its own window, so it needs no permission.
+
 ### The gym
 
 <table>
@@ -120,12 +129,15 @@ There's no Xcode project: the app is a handful of Objective-C files, built with 
 
 # Open straight into a tool
 open ~/Applications/RodentGym.app --args --show-latency --show-selftest --show-trainer --show-game --show-force
+
+# Draw every keyboard layout to PNGs, to check layout data by eye
+build/RodentGym.app/Contents/MacOS/RodentGym --keyboard-layouts /tmp/layouts
 ```
 </details>
 
 ## Privacy
 
-RodentGym watches mouse buttons and touches, never the keyboard. It makes no network connections, needs no Accessibility permission, and nothing leaves your Mac. Its log stays in `~/Library/Logs` and only you can read it.
+RodentGym watches mouse buttons and touches. It never opens a keyboard or watches typing in other apps: the Keyboard Tester only sees keys pressed in its own window, and doesn't log them. It makes no network connections, needs no Accessibility permission, and nothing leaves your Mac. Its log stays in `~/Library/Logs` and only you can read it.
 
 It only listens, with one exception: if you move the Magic Mouse split, it saves your new split to the mouse's preferences.
 

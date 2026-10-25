@@ -15,7 +15,7 @@ clang -fobjc-arc -O2 -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=14
   -o "$APP/Contents/MacOS/RodentGym" Sources/*.m \
   -F/System/Library/PrivateFrameworks -framework MultitouchSupport \
   -framework Cocoa -framework IOKit -framework ApplicationServices -framework QuartzCore \
-  -framework IOBluetooth -framework CoreBluetooth
+  -framework IOBluetooth -framework CoreBluetooth -framework Carbon
 
 # The app draws its own icon; render it and convert to .icns
 "$APP/Contents/MacOS/RodentGym" --render-icon "$BUILD/icon_1024.png"
