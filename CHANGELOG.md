@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0 — unreleased
+## 0.6.0 — 2026-10-26
 
 - **Keyboard Tester** (Devices › Keyboard Tester, ⌘B): press every key on a Magic Keyboard, an older Apple Wireless Keyboard or the Mac's own keyboard and watch it light up. Flags chatter (a key re-pressing within 30 ms), keys held down for more than four seconds, and the highest rollover. Draws the keyboard at its real shape (compact or with numeric keypad; ANSI, ISO or JIS; Touch ID, lock or eject key) with labels from your current input source, follows the layout of the keyboard you're typing on, and has a caps lock light. Left and right modifiers are told apart. Shortcuts are paused while it's in front so ⌘Q is safe to test. Keys are read only from its own window, with no permission, and never logged. **Copy Report** lists anything that didn't work.
 - **Keyboard tiles** in the main window: each Apple keyboard gets a tile with a small drawing, model, firmware, connection, layout and battery with charging status. Click it to open the Keyboard Tester. The built-in keyboard follows the lid, like the built-in trackpad (Settings › Built-in trackpad and keyboard). Connects, disconnects and charging changes are logged.
